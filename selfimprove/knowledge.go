@@ -252,7 +252,12 @@ func (ks *KnowledgeStore) AddWorkflowPattern(pattern WorkflowPattern) error {
 	if !ok {
 		existing = make(map[string]interface{})
 		existing["name"] = pattern.Name
-		existing["steps"] = pattern.Steps
+		// Convert steps to []interface{} so JSON round-trip works
+		stepsI := make([]interface{}, len(pattern.Steps))
+		for i, s := range pattern.Steps {
+			stepsI[i] = s
+		}
+		existing["steps"] = stepsI
 		existing["success_rate"] = pattern.SuccessRate
 		existing["usage_count"] = 1
 	} else {

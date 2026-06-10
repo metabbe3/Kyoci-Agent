@@ -3,6 +3,7 @@ package selfimprove
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/nicholas/ai-agent/codegraph"
+	"github.com/nicholas/ai-agent/llm"
 )
 
 // ImprovementPhase represents the current phase of an improvement job
@@ -46,33 +48,43 @@ type ImprovementJob struct {
 
 // SelfImprovePipeline manages the safe self-improvement workflow
 type SelfImprovePipeline struct {
-	knowledge   *codegraph.CodeKnowledge
-	impact      *codegraph.ImpactAnalyzer
-	validator   *Validator
-	lspClient   *codegraph.LSPClient
-	projectRoot string
-	maxParallel int
-	jobs        *sync.Map // jobID -> *ImprovementJob
-	notify      func(job *ImprovementJob)
+	knowledge      *codegraph.CodeKnowledge
+	impact         *codegraph.ImpactAnalyzer
+	validator      *Validator
+	lspClient      *codegraph.LSPClient
+	projectRoot    string
+	maxParallel    int
+	jobs           *sync.Map // jobID -> *ImprovementJob
+	notify         func(job *ImprovementJob)
+	skillGenerator *SkillGenerator
+	learner        *ExperienceLearner
 }
 
 // NewSelfImprovePipeline creates a new pipeline instance
-func NewSelfImprovePipeline(root string, ck *codegraph.CodeKnowledge, lsp *codegraph.LSPClient) *SelfImprovePipeline {
+func NewSelfImprovePipeline(root string, ck *codegraph.CodeKnowledge, lsp *codegraph.LSPClient, router *llm.Router, learner *ExperienceLearner) *SelfImprovePipeline {
 	var impact *codegraph.ImpactAnalyzer
 	if ck != nil && lsp != nil {
 		// Import codegraph from internal package: "github.com/nicholas/ai-agent/codegraph"
 		impact = codegraph.NewImpactAnalyzer(nil, lsp)
 	}
 
+	// Create skill generator if router is available
+	var skillGen *SkillGenerator
+	if router != nil && learner != nil {
+		skillGen = NewSkillGenerator(router, learner, root)
+	}
+
 	return &SelfImprovePipeline{
-		knowledge:   ck,
-		impact:      impact,
-		lspClient:   lsp,
-		projectRoot: root,
-		validator:   NewValidator(root),
-		maxParallel: 1, // Start with 1 for safety
-		jobs:        &sync.Map{},
-		notify:      nil, // Can be set later
+		knowledge:      ck,
+		impact:         impact,
+		lspClient:      lsp,
+		projectRoot:    root,
+		validator:      NewValidator(root),
+		maxParallel:    1, // Start with 1 for safety
+		jobs:           &sync.Map{},
+		notify:         nil, // Can be set later
+		skillGenerator: skillGen,
+		learner:        learner,
 	}
 }
 
@@ -411,4 +423,88 @@ func (p *SelfImprovePipeline) ListJobs() []*ImprovementJob {
 	})
 
 	return jobs
+}
+
+// GenerateSkills generates new skills from execution history
+func (p *SelfImprovePipeline) GenerateSkills(ctx context.Context, minUsageCount int, minSuccessRate float64) ([]*GeneratedSkill, error) {
+	if p.skillGenerator == nil {
+		return nil, fmt.Errorf("skill generator not initialized")
+	}
+
+	slog.Info("Starting skill generation",
+		"minUsageCount", minUsageCount,
+		"minSuccessRate", minSuccessRate,
+	)
+
+	return p.skillGenerator.RunGenerationPipeline(ctx, minUsageCount, minSuccessRate)
+}
+
+// ValidateAndRegisterSkill validates and registers a generated skill
+func (p *SelfImprovePipeline) ValidateAndRegisterSkill(ctx context.Context, skill *GeneratedSkill, sandbox *Sandbox) (*ValidationResult, error) {
+	if sandbox == nil {
+		var err error
+		sandbox, err = NewSandbox(p.projectRoot)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create sandbox: %w", err)
+		}
+		defer sandbox.Cleanup()
+	}
+
+	// Create the skill file in sandbox
+	skillFile := fmt.Sprintf("skill/auto_%s.go", skill.Name)
+	if err := sandbox.ApplyChange(skillFile, skill.HandlerCode); err != nil {
+		return nil, fmt.Errorf("failed to write skill file: %w", err)
+	}
+
+	// Validate in sandbox
+	result, err := sandbox.Validate(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("validation failed: %w", err)
+	}
+
+	if !result.Valid {
+		return result, fmt.Errorf("validation failed: %d errors", len(result.Errors))
+	}
+
+	return result, nil
+}
+
+// GetExperienceStats returns statistics about the experience learner
+func (p *SelfImprovePipeline) GetExperienceStats() map[string]interface{} {
+	if p.learner == nil {
+		return map[string]interface{}{
+			"total_experiences": 0,
+			"message": "learner not initialized",
+		}
+	}
+
+	stats := make(map[string]interface{})
+	stats["total_experiences"] = p.learner.GetTotalCount()
+	
+	// Get recent experiences
+	recent := p.learner.GetRecentExperiences(10)
+	toolCounts := make(map[string]int)
+	successCounts := make(map[string]int)
+	
+	for _, exp := range recent {
+		toolCounts[exp.Tool]++
+		if exp.Success {
+			successCounts[exp.Tool]++
+		}
+	}
+	
+	stats["recent_tool_usage"] = toolCounts
+	stats["recent_success_counts"] = successCounts
+	stats["recent_sample_size"] = len(recent)
+	
+	// Calculate success rates
+	successRates := make(map[string]float64)
+	for tool, count := range toolCounts {
+		if count > 0 {
+			successRates[tool] = float64(successCounts[tool]) / float64(count)
+		}
+	}
+	stats["success_rates"] = successRates
+	
+	return stats
 }

@@ -15,21 +15,23 @@ import (
 	"github.com/nicholas/ai-agent/llm"
 	"github.com/nicholas/ai-agent/skill"
 	"github.com/nicholas/ai-agent/tools"
+	"github.com/nicholas/ai-agent/selfimprove"
 )
 
 // ServerV2 is the HTTP API v2 server with security middleware
 type ServerV2 struct {
-	agent             *agent.Agent              // Global agent for non-session operations (deprecated, unused in chat)
-	router            *llm.Router
-	toolReg           *tools.Registry
-	skillReg          *skill.Registry
-	config            *config.Config
-	auth              *security.APIKeyAuth       // API key authentication
-	rateLimiter       *security.RateLimiter      // Rate limiting
-	sessions          *SessionManager
-	agentFactory      func() *agent.Agent        // Factory to create per-session agents
-	httpServer        *http.Server
-	rateLimitEnabled  bool                       // Enable rate limiting based on config
+	agent              *agent.Agent              // Global agent for non-session operations (deprecated, unused in chat)
+	router             *llm.Router
+	toolReg            *tools.Registry
+	skillReg           *skill.Registry
+	config             *config.Config
+	auth               *security.APIKeyAuth       // API key authentication
+	rateLimiter        *security.RateLimiter      // Rate limiting
+	sessions           *SessionManager
+	agentFactory       func() *agent.Agent        // Factory to create per-session agents
+	httpServer         *http.Server
+	rateLimitEnabled   bool                       // Enable rate limiting based on config
+	selfImprovePipeline *selfimprove.SelfImprovePipeline // Self-improvement pipeline
 }
 
 // NewServerV2 creates a new API v2 server with security middleware
@@ -73,6 +75,11 @@ func (s *ServerV2) SetSkillRegistry(sr *skill.Registry) {
 	s.skillReg = sr
 }
 
+// SetSelfImprovePipeline sets the self-improvement pipeline
+func (s *ServerV2) SetSelfImprovePipeline(pipeline *selfimprove.SelfImprovePipeline) {
+	s.selfImprovePipeline = pipeline
+}
+
 // Start begins serving the HTTP API v2
 func (s *ServerV2) Start() error {
 	mux := http.NewServeMux()
@@ -86,6 +93,8 @@ func (s *ServerV2) Start() error {
 	mux.HandleFunc("GET /v2/memory", s.withSecurity(s.handleV2Memory))
 	mux.HandleFunc("POST /v2/session/new", s.withSecurity(s.handleV2SessionNew))
 	mux.HandleFunc("DELETE /v2/session/", s.withSecurity(s.handleV2SessionDelete))
+	mux.HandleFunc("POST /v2/self-improve", s.withSecurity(s.handleV2SelfImprove))
+	mux.HandleFunc("GET /v2/self-improve/stats", s.withSecurity(s.handleV2SelfImproveStats))
 
 	// WebSocket endpoint (with security)
 	mux.HandleFunc("/v2/ws", s.withSecurity(s.handleWebSocketUpgrade))
@@ -339,7 +348,7 @@ func (s *ServerV2) handleV2Status(w http.ResponseWriter, r *http.Request) {
 	providers := s.router.ListProviders()
 	tools := s.toolReg.List()
 
-	jsonResp(w, http.StatusOK, map[string]interface{}{
+	response := map[string]interface{}{
 		"status": "ok",
 		"version": "2.0.0",
 		"providers": map[string]interface{}{
@@ -361,7 +370,21 @@ func (s *ServerV2) handleV2Status(w http.ResponseWriter, r *http.Request) {
 			"enabled": longTermMem != nil,
 		},
 		"ollama_queue": s.router.OllamaQueueStats(),
-	})
+	}
+
+	// Add self-improvement stats if available
+	if s.selfImprovePipeline != nil {
+		selfImproveStats := s.selfImprovePipeline.GetExperienceStats()
+		selfImproveStats["enabled"] = true
+		response["self_improvement"] = selfImproveStats
+	} else {
+		response["self_improvement"] = map[string]interface{}{
+			"enabled": false,
+			"message": "pipeline not initialized",
+		}
+	}
+
+	jsonResp(w, http.StatusOK, response)
 }
 
 // handleV2Tools handles GET /v2/tools
@@ -569,4 +592,60 @@ func (sm *SessionManager) cleanup() {
 
 func generateSessionID() string {
 	return fmt.Sprintf("sess_%d", time.Now().UnixNano())
+}
+
+// handleV2SelfImprove handles POST /v2/self-improve
+func (s *ServerV2) handleV2SelfImprove(w http.ResponseWriter, r *http.Request) {
+	if s.selfImprovePipeline == nil {
+		jsonError(w, http.StatusServiceUnavailable, "self-improvement pipeline not initialized")
+		return
+	}
+
+	var req struct {
+		MinUsageCount    int     `json:"min_usage_count"`
+		MinSuccessRate   float64 `json:"min_success_rate"`
+		ValidateOnly     bool    `json:"validate_only"`
+	}
+
+	// Set defaults
+	req.MinUsageCount = 3
+	req.MinSuccessRate = 0.7
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	ctx := r.Context()
+
+	// Generate skills from history
+	skills, err := s.selfImprovePipeline.GenerateSkills(ctx, req.MinUsageCount, req.MinSuccessRate)
+	if err != nil {
+		slog.Error("skill generation failed", "error", err)
+		jsonError(w, http.StatusInternalServerError, fmt.Sprintf("skill generation failed: %v", err))
+		return
+	}
+
+	jsonResp(w, http.StatusOK, map[string]interface{}{
+		"generated_skills": skills,
+		"count":            len(skills),
+		"message": fmt.Sprintf("Generated %d skills from %d+ uses with %.0f%%+ success rate",
+			len(skills), req.MinUsageCount, req.MinSuccessRate*100),
+	})
+}
+
+// handleV2SelfImproveStats handles GET /v2/self-improve/stats
+func (s *ServerV2) handleV2SelfImproveStats(w http.ResponseWriter, r *http.Request) {
+	if s.selfImprovePipeline == nil {
+		jsonResp(w, http.StatusOK, map[string]interface{}{
+			"pipeline_enabled": false,
+			"message": "self-improvement pipeline not initialized",
+		})
+		return
+	}
+
+	stats := s.selfImprovePipeline.GetExperienceStats()
+	stats["pipeline_enabled"] = true
+
+	jsonResp(w, http.StatusOK, stats)
 }

@@ -18,6 +18,7 @@ import (
 	"github.com/nicholas/ai-agent/agent"
 	"github.com/nicholas/ai-agent/config"
 	"github.com/nicholas/ai-agent/llm"
+	"github.com/nicholas/ai-agent/selfimprove"
 	"github.com/nicholas/ai-agent/skill"
 	"github.com/nicholas/ai-agent/tools"
 )
@@ -52,6 +53,11 @@ func (s *Server) Start() error {
 // SetSkillRegistry sets the skill registry for Tier 0 matching
 func (s *Server) SetSkillRegistry(sr *skill.Registry) {
 	s.v2.SetSkillRegistry(sr)
+}
+
+// SetSelfImprovePipeline sets the self-improvement pipeline
+func (s *Server) SetSelfImprovePipeline(pipeline *selfimprove.SelfImprovePipeline) {
+	s.v2.SetSelfImprovePipeline(pipeline)
 }
 
 // Shutdown gracefully stops the server

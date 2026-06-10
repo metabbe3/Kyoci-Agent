@@ -143,10 +143,8 @@ func (o *Orchestrator) Spawn(ctx context.Context, goal string) (*SubAgent, error
 	// Generate unique ID
 	id := generateSubAgentID()
 
-	// Calculate fair share of token budget
-	o.mu.RLock()
+	// Calculate fair share of token budget (we already have the write lock)
 	activeCount := len(o.subAgents)
-	o.mu.RUnlock()
 
 	fairShare := o.tokenBudget / (activeCount + 1)
 	if fairShare < 1000 {

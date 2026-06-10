@@ -510,13 +510,21 @@ class AgentTestHarness:
                 assert response is not None, f"Message {i+1} failed"
 
             # Send another message to verify compaction didn't break the session
-            final_resp = self.chat("what is 2+2", session_id=session_id)
+            final_resp = self.chat("hitung 2+2", session_id=session_id)
             content = str(final_resp.get("message", ""))
-            # Should still work and return a valid response
             assert len(content) > 0, "Session compaction should preserve functionality"
             return f"Session compaction test passed (20+ messages, final response: {len(content)} chars)", ""
 
         self.run_test("INTELLIGENCE", "session_compaction", test_session_compaction)
+
+        # ── Self-Improvement ──
+        def test_self_improve_stats():
+            resp = self.http_get("/v2/self-improve/stats")
+            assert resp.get("pipeline_enabled") == True, f"Pipeline should be enabled, got: {resp}"
+            assert "total_experiences" in resp, f"Missing total_experiences in stats: {resp}"
+            return f"Self-improve pipeline active (experiences: {resp.get('total_experiences', 0)})", ""
+
+        self.run_test("INTELLIGENCE", "self_improve_stats", test_self_improve_stats)
 
     def run_grpc_tests(self):
         """Category 8: gRPC Tests"""

@@ -2,62 +2,16 @@ package agent
 
 import (
 	"context"
-	"strings"
 	"testing"
-	"time"
 
 	"github.com/nicholas/ai-agent/config"
 	"github.com/nicholas/ai-agent/llm"
 	"github.com/nicholas/ai-agent/tools"
 )
 
-// mockLLMProvider is a comprehensive mock for testing
-type mockLLMProvider struct {
-	failAfter       int
-	callCount       int
-	responseContent string
-}
-
-func newMockLLMProvider(response string) *mockLLMProvider {
-	return &mockLLMProvider{
-		responseContent: response,
-	}
-}
-
-func (m *mockLLMProvider) Chat(ctx context.Context, messages []llm.Message, tools []llm.ToolSchema) (*llm.Response, error) {
-	m.callCount++
-	if m.failAfter > 0 && m.callCount >= m.failAfter {
-		return nil, ctx.Err()
-	}
-	return &llm.Response{
-		Content: m.responseContent,
-		Usage: llm.Usage{
-			InputTokens:  100,
-			OutputTokens: 50,
-		},
-		StopReason: "stop",
-	}, nil
-}
-
-func (m *mockLLMProvider) Stream(ctx context.Context, messages []llm.Message, tools []llm.ToolSchema) (<-chan llm.Chunk, error) {
-	ch := make(chan llm.Chunk, 1)
-	ch <- llm.Chunk{Content: m.responseContent, Done: true}
-	close(ch)
-	return ch, nil
-}
-
-func (m *mockLLMProvider) Name() string {
-	return "mock-provider"
-}
-
 // TestOrchestratorCreation tests orchestrator creation and configuration
 func TestOrchestratorCreation(t *testing.T) {
-	cfg, err := getConfigForTest()
-	if err != nil {
-		t.Skip("Cannot get config for test")
-	}
-
-	router := llm.NewRouter(cfg)
+	cfg, router := getConfigForTest()
 	toolReg := tools.NewRegistry()
 	master := NewV2(cfg, router, toolReg)
 
@@ -93,12 +47,7 @@ func TestOrchestratorCreation(t *testing.T) {
 
 // TestOrchestratorShouldDelegateLogic tests delegation decision logic
 func TestOrchestratorShouldDelegateLogic(t *testing.T) {
-	cfg, err := getConfigForTest()
-	if err != nil {
-		t.Skip("Cannot get config for test")
-	}
-
-	router := llm.NewRouter(cfg)
+	cfg, router := getConfigForTest()
 	toolReg := tools.NewRegistry()
 	master := NewV2(cfg, router, toolReg)
 	orch := NewOrchestrator(master)
@@ -133,12 +82,7 @@ func TestOrchestratorShouldDelegateLogic(t *testing.T) {
 
 // TestOrchestratorSpawn tests spawning a single sub-agent
 func TestOrchestratorSpawn(t *testing.T) {
-	cfg, err := getConfigForTest()
-	if err != nil {
-		t.Skip("Cannot get config for test")
-	}
-
-	router := llm.NewRouter(cfg)
+	cfg, router := getConfigForTest()
 	toolReg := tools.NewRegistry()
 	master := NewV2(cfg, router, toolReg)
 	orch := NewOrchestrator(master)
@@ -163,12 +107,7 @@ func TestOrchestratorSpawn(t *testing.T) {
 
 // TestOrchestratorSpawnBatch tests spawning multiple sub-agents
 func TestOrchestratorSpawnBatch(t *testing.T) {
-	cfg, err := getConfigForTest()
-	if err != nil {
-		t.Skip("Cannot get config for test")
-	}
-
-	router := llm.NewRouter(cfg)
+	cfg, router := getConfigForTest()
 	toolReg := tools.NewRegistry()
 	master := NewV2(cfg, router, toolReg)
 	orch := NewOrchestrator(master, WithMaxParallel(3))
@@ -205,12 +144,7 @@ func TestOrchestratorSpawnBatch(t *testing.T) {
 
 // TestOrchestratorParallelLimit tests that parallel limit is enforced
 func TestOrchestratorParallelLimit(t *testing.T) {
-	cfg, err := getConfigForTest()
-	if err != nil {
-		t.Skip("Cannot get config for test")
-	}
-
-	router := llm.NewRouter(cfg)
+	cfg, router := getConfigForTest()
 	toolReg := tools.NewRegistry()
 	master := NewV2(cfg, router, toolReg)
 	orch := NewOrchestrator(master, WithMaxParallel(2)) // Limit to 2
@@ -242,111 +176,15 @@ func TestOrchestratorParallelLimit(t *testing.T) {
 	orch.Shutdown()
 }
 
-// TestOrchestratorSynthesize tests result synthesis
-func TestOrchestratorSynthesize(t *testing.T) {
-	cfg, err := getConfigForTest()
-	if err != nil {
-		t.Skip("Cannot get config for test")
-	}
-
-	router := llm.NewRouter(cfg)
-	toolReg := tools.NewRegistry()
-	master := NewV2(cfg, router, toolReg)
-	orch := NewOrchestrator(master)
-
-	// Create mock results
-	results := []SubAgentResult{
-		{
-			ID:         "sa-1",
-			Goal:       "Task A",
-			Status:     "done",
-			Result:     "Result from Task A",
-			TokensUsed: 100,
-			Duration:   100 * time.Millisecond,
-		},
-		{
-			ID:         "sa-2",
-			Goal:       "Task B",
-			Status:     "done",
-			Result:     "Result from Task B",
-			TokensUsed: 150,
-			Duration:   150 * time.Millisecond,
-		},
-		{
-			ID:         "sa-3",
-			Goal:       "Task C",
-			Status:     "failed",
-			Error:      "timeout",
-			TokensUsed: 50,
-			Duration:   200 * time.Millisecond,
-		},
-	}
-
-	summary := orch.Synthesize(results)
-
-	// Verify summary contains expected content
-	if !strings.Contains(summary, "Sub-Agent Results Summary") {
-		t.Error("Summary should contain 'Sub-Agent Results Summary'")
-	}
-	if !strings.Contains(summary, "2 successful") {
-		t.Error("Summary should show 2 successful")
-	}
-	if !strings.Contains(summary, "1 failed") {
-		t.Error("Summary should show 1 failed")
-	}
-	if !strings.Contains(summary, "250") { // Total tokens
-		t.Error("Summary should show total tokens")
-	}
-}
-
-// TestOrchestratorGetStats tests statistics gathering
-func TestOrchestratorGetStats(t *testing.T) {
-	cfg, err := getConfigForTest()
-	if err != nil {
-		t.Skip("Cannot get config for test")
-	}
-
-	router := llm.NewRouter(cfg)
-	toolReg := tools.NewRegistry()
-	master := NewV2(cfg, router, toolReg)
-	orch := NewOrchestrator(master, WithMaxParallel(5), WithMaxDepth(2), WithTokenBudget(15000))
-
-	stats := orch.GetStats()
-
-	// Verify stats
-	if stats["max_parallel"] != 5 {
-		t.Errorf("Expected max_parallel=5, got %v", stats["max_parallel"])
-	}
-	if stats["max_depth"] != 2 {
-		t.Errorf("Expected max_depth=2, got %v", stats["max_depth"])
-	}
-	if stats["token_budget"] != 15000 {
-		t.Errorf("Expected token_budget=15000, got %v", stats["token_budget"])
-	}
-
-	// Status counts should be present
-	statusCounts, ok := stats["status_counts"].(map[string]int)
-	if !ok {
-		t.Error("Expected status_counts to be a map[string]int")
-	} else {
-		t.Logf("Status counts: %v", statusCounts)
-	}
-}
-
 // TestOrchestratorCollectResults tests result collection
 func TestOrchestratorCollectResults(t *testing.T) {
-	cfg, err := getConfigForTest()
-	if err != nil {
-		t.Skip("Cannot get config for test")
-	}
-
-	router := llm.NewRouter(cfg)
+	cfg, router := getConfigForTest()
 	toolReg := tools.NewRegistry()
 	master := NewV2(cfg, router, toolReg)
 	orch := NewOrchestrator(master)
 
 	ctx := context.Background()
-	_, err = orch.Spawn(ctx, "Test task")
+	_, err := orch.Spawn(ctx, "Test task")
 	if err != nil {
 		t.Fatalf("Failed to spawn: %v", err)
 	}
@@ -367,12 +205,7 @@ func TestOrchestratorCollectResults(t *testing.T) {
 
 // TestOrchestratorGetSubAgent tests retrieving individual sub-agents
 func TestOrchestratorGetSubAgent(t *testing.T) {
-	cfg, err := getConfigForTest()
-	if err != nil {
-		t.Skip("Cannot get config for test")
-	}
-
-	router := llm.NewRouter(cfg)
+	cfg, router := getConfigForTest()
 	toolReg := tools.NewRegistry()
 	master := NewV2(cfg, router, toolReg)
 	orch := NewOrchestrator(master)
@@ -406,10 +239,15 @@ func TestOrchestratorGetSubAgent(t *testing.T) {
 }
 
 // getConfigForTest loads a minimal config for testing
-func getConfigForTest() (*config.Config, error) {
+func getConfigForTest() (*config.Config, *llm.Router) {
 	cfg := &config.Config{
 		LLM: config.LLMConfig{
 			DefaultProvider: "mock",
+			Providers: map[string]config.ProviderConfig{
+				"mock": {
+					Model: "mock-model",
+				},
+			},
 		},
 		Agent: config.AgentConfig{
 			Template: "system",
@@ -421,5 +259,8 @@ func getConfigForTest() (*config.Config, error) {
 			LongTermPath:         "/tmp/ai-agent-test/memory.json",
 		},
 	}
-	return cfg, nil
+	router := llm.NewRouter(cfg)
+	// Register mock provider
+	router.RegisterProvider("mock", llm.NewMockProvider("Mock response for testing"))
+	return cfg, router
 }

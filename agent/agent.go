@@ -27,6 +27,7 @@ type Agent struct {
 	learner   *selfimprove.SelfImprover
 	mode      string // system, coder, researcher, analyst, browser, creative
 	tmpl      *template.Template
+	orchestrator *Orchestrator // sub-agent delegation system
 }
 
 // NewV2 creates an advanced agent with all subsystems
@@ -55,7 +56,7 @@ func NewV2(cfg *config.Config, router *llm.Router, toolReg *tools.Registry) *Age
 
 	_ = longMem // used below
 
-	return &Agent{
+	agent := &Agent{
 		config:    cfg,
 		router:    router,
 		tools:     toolReg,
@@ -66,6 +67,16 @@ func NewV2(cfg *config.Config, router *llm.Router, toolReg *tools.Registry) *Age
 		mode:      cfg.Agent.Template,
 		tmpl:      tmpl,
 	}
+
+	// Initialize orchestrator for sub-agent delegation
+	agent.orchestrator = NewOrchestrator(
+		agent,
+		WithMaxParallel(3),
+		WithMaxDepth(1),
+		WithTokenBudget(10000),
+	)
+
+	return agent
 }
 
 // Run executes the full agent loop with self-improvement

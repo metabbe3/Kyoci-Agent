@@ -25,6 +25,7 @@ import (
 	"github.com/nicholas/ai-agent/pool"
 	"github.com/nicholas/ai-agent/proto"
 	"github.com/nicholas/ai-agent/security"
+	"github.com/nicholas/ai-agent/selfimprove"
 	"github.com/nicholas/ai-agent/selfskill"
 	"github.com/nicholas/ai-agent/skill"
 	"github.com/nicholas/ai-agent/thinking"
@@ -305,6 +306,14 @@ func main() {
 	if startHTTP {
 		srv := api.NewServer(cfg, ag, router, toolReg)
 		srv.SetSkillRegistry(skillReg)
+
+		// Initialize self-improvement pipeline
+		improveDataDir := os.TempDir() + "/ai-agent-selfimprove"
+		os.MkdirAll(improveDataDir, 0o755)
+		learner := selfimprove.NewExperienceLearner(improveDataDir + "/experiences.json")
+		pipeline := selfimprove.NewSelfImprovePipeline(".", codeKnowledge, nil, router, learner)
+		srv.SetSelfImprovePipeline(pipeline)
+
 		slog.Info("Starting API server", "host", cfg.Server.Host, "port", cfg.Server.Port)
 
 		serverErr := make(chan error, 1)

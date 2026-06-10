@@ -71,6 +71,13 @@ func NewRouter(cfg *config.Config) *Router {
 	return r
 }
 
+// RegisterProvider adds a provider to the router
+func (r *Router) RegisterProvider(name string, provider Provider) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.providers[name] = provider
+}
+
 // Chat sends a request to the default provider, with automatic fallback
 func (r *Router) Chat(ctx context.Context, messages []Message, tools []ToolSchema) (*Response, error) {
 	r.mu.RLock()
