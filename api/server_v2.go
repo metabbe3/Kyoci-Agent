@@ -12,6 +12,7 @@ import (
 	"github.com/nicholas/ai-agent/agent"
 	"github.com/nicholas/ai-agent/config"
 	"github.com/nicholas/ai-agent/llm"
+	"github.com/nicholas/ai-agent/skill"
 	"github.com/nicholas/ai-agent/tools"
 )
 
@@ -20,6 +21,7 @@ type ServerV2 struct {
 	agent       *agent.Agent
 	router      *llm.Router
 	toolReg     *tools.Registry
+	skillReg    *skill.Registry
 	config      *config.Config
 	apiKey      string
 	rateLimiter *RateLimiter
@@ -38,6 +40,11 @@ func NewServerV2(cfg *config.Config, ag *agent.Agent, r *llm.Router, tr *tools.R
 		rateLimiter: NewRateLimiter(100, time.Minute), // 100 requests per minute
 		sessions:    NewSessionManager(),
 	}
+}
+
+// SetSkillRegistry sets the skill registry for Tier 0 matching
+func (s *ServerV2) SetSkillRegistry(sr *skill.Registry) {
+	s.skillReg = sr
 }
 
 // Start begins serving the HTTP API v2
@@ -144,6 +151,21 @@ func (s *ServerV2) handleV2Chat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
+
+	// ── Tier 0: Zero-AI skill (instant, free) ──
+	if s.skillReg != nil {
+		if output, matched, _ := s.skillReg.Execute(ctx, req.Message); matched {
+			jsonResp(w, http.StatusOK, map[string]interface{}{
+				"message":    output,
+				"tier":       0,
+				"model":      "builtin",
+				"tokens":     0,
+				"session_id": sess.ID,
+			})
+			return
+		}
+	}
+
 	response, err := s.agent.Run(ctx, req.Message)
 
 	// Restore original config

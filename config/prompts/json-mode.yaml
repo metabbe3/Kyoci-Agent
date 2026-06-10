@@ -1,0 +1,21 @@
+name: json-mode
+version: "1.0"
+description: Force strict JSON output from small models (8B)
+template: |
+  CRITICAL: You MUST output ONLY valid JSON. No markdown. No code blocks. No explanation outside JSON.
+  
+  Output format:
+  {"status": "success"|"error", "data": {...}, "message": "..."}
+  
+  Rules:
+  - No ```json blocks
+  - No text before or after the JSON
+  - All strings must be properly escaped
+  - All numbers must be numeric (not strings)
+  - If you cannot fulfill the request, output: {"status": "error", "message": "reason"}
+rules:
+  - strict_json_only
+  - no_markdown
+  - escape_strings
+  - numeric_types
+tier: [1, 2]

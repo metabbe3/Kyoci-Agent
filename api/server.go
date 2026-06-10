@@ -18,6 +18,7 @@ import (
 	"github.com/nicholas/ai-agent/agent"
 	"github.com/nicholas/ai-agent/config"
 	"github.com/nicholas/ai-agent/llm"
+	"github.com/nicholas/ai-agent/skill"
 	"github.com/nicholas/ai-agent/tools"
 )
 
@@ -46,6 +47,11 @@ func NewServerWithAPIKey(cfg *config.Config, ag *agent.Agent, r *llm.Router, tr 
 // Start begins serving the HTTP API
 func (s *Server) Start() error {
 	return s.v2.Start()
+}
+
+// SetSkillRegistry sets the skill registry for Tier 0 matching
+func (s *Server) SetSkillRegistry(sr *skill.Registry) {
+	s.v2.SetSkillRegistry(sr)
 }
 
 // Shutdown gracefully stops the server

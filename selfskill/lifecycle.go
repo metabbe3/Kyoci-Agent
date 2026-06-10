@@ -128,24 +128,26 @@ func (sl *SkillLifecycle) RunPeriodically(interval time.Duration) {
 	sl.running = true
 	sl.mu.Unlock()
 
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
 
-	for {
-		select {
-		case <-sl.stopChan:
-			sl.mu.Lock()
-			sl.running = false
-			sl.mu.Unlock()
-			return
-		case <-ticker.C:
-			ctx := context.Background()
-			_, err := sl.Pipeline(ctx)
-			if err != nil {
-				fmt.Printf("Pipeline run error: %v\n", err)
+		for {
+			select {
+			case <-sl.stopChan:
+				sl.mu.Lock()
+				sl.running = false
+				sl.mu.Unlock()
+				return
+			case <-ticker.C:
+				ctx := context.Background()
+				_, err := sl.Pipeline(ctx)
+				if err != nil {
+					fmt.Printf("Pipeline run error: %v\n", err)
+				}
 			}
 		}
-	}
+	}()
 }
 
 // Stop stops the periodic pipeline runner.

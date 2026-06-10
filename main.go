@@ -275,6 +275,7 @@ func main() {
 	// ── HTTP API mode ──
 	if *serverMode {
 		srv := api.NewServer(cfg, ag, router, toolReg)
+		srv.SetSkillRegistry(skillReg)
 		slog.Info("Starting API server", "host", cfg.Server.Host, "port", cfg.Server.Port)
 
 		// Start server in a goroutine
