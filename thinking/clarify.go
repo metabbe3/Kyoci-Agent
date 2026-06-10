@@ -37,22 +37,25 @@ func DetectAmbiguity(task string) *ClarificationRequest {
 	
 	// Check 2: Missing context (no tool specified)
 	toolKeywords := []string{"run", "execute", "build", "test", "compile", "deploy"}
-	hasTool := false
+	knownTools := []string{"docker", "make", "npm", "python", "go", "java", "mvn"}
+	
+	hasKeyword := false
 	for _, kw := range toolKeywords {
 		if strings.Contains(lowerTask, kw) {
-			hasTool = true
-			// Check if tool name follows the keyword
-			for _, tool := range []string{"docker", "make", "npm", "python", "go", "java", "mvn"} {
-				if strings.Contains(lowerTask, kw+" "+tool) || strings.Contains(lowerTask, tool+" "+kw) {
-					hasTool = true
-					break
-				}
-			}
+			hasKeyword = true
 			break
 		}
 	}
 	
-	if hasTool && !strings.Contains(lowerTask, "using") && !strings.Contains(lowerTask, "with") {
+	hasTool := false
+	for _, tool := range knownTools {
+		if strings.Contains(lowerTask, tool) {
+			hasTool = true
+			break
+		}
+	}
+	
+	if hasKeyword && !hasTool && !strings.Contains(lowerTask, "using") && !strings.Contains(lowerTask, "with") {
 		request.UncertainAspects = append(request.UncertainAspects, "Tool specification missing")
 		request.Questions = append(request.Questions, "What tool or method should be used to perform this action?")
 		request.SuggestedOptions["tool"] = []string{"Specify the tool explicitly", "Ask AI to recommend a tool", "Use default tool for the task type"}

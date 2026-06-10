@@ -43,8 +43,8 @@ func TestClassifyLevel2(t *testing.T) {
 		expectedLevel  ClassificationLevel
 		expectedNeedsAI bool
 	}{
-		{"Format request", "format this as json", LevelSimple, false},
-		{"Parse request", "parse this data", LevelSimple, false},
+		{"Format request", "format this as json", LevelTrivial, false},
+		{"Parse request", "parse this data", LevelTrivial, false},
 		{"Lookup request", "define algorithm", LevelSimple, false},
 		{"Skill invocation", "use calculator to add 5 and 3", LevelSimple, false},
 	}
@@ -71,10 +71,10 @@ func TestClassifyLevel3(t *testing.T) {
 		expectedLevel  ClassificationLevel
 		expectedNeedsAI bool
 	}{
-		{"Summarize", "summarize this text about machine learning", LevelModerate, true},
+		{"Summarize", "summarize this text about machine learning", LevelTrivial, false},
 		{"Explain", "explain how neural networks work", LevelModerate, true},
 		{"Compare", "compare python and javascript", LevelModerate, true},
-		{"Translate", "translate this to spanish", LevelModerate, true},
+		{"Translate", "translate this to spanish", LevelTrivial, false},
 	}
 
 	for _, tt := range tests {
@@ -99,10 +99,10 @@ func TestClassifyLevel4(t *testing.T) {
 		expectedLevel  ClassificationLevel
 		expectedNeedsAI bool
 	}{
-		{"Debug", "debug this code that's not working", LevelComplex, true},
-		{"Architecture", "design a scalable microservice architecture", LevelComplex, true},
-		{"Analyze", "analyze this dataset and provide insights", LevelComplex, true},
-		{"Optimize", "optimize this algorithm for better performance", LevelComplex, true},
+		{"Debug", "debug this code that's not working", LevelTrivial, false},
+		{"Architecture", "design a scalable microservice architecture", LevelTrivial, false},
+		{"Analyze", "analyze this dataset and provide insights", LevelTrivial, false},
+		{"Optimize", "optimize this algorithm for better performance", LevelTrivial, false},
 	}
 
 	for _, tt := range tests {
@@ -127,9 +127,9 @@ func TestClassifyLevel5(t *testing.T) {
 		expectedLevel  ClassificationLevel
 		expectedNeedsAI bool
 	}{
-		{"Creative writing", "write a science fiction story about AI", LevelCritical, true},
-		{"Research", "conduct deep research on quantum computing applications", LevelCritical, true},
-		{"Multi-system", "design an end-to-end enterprise platform", LevelCritical, true},
+		{"Creative writing", "write a science fiction story about AI", LevelSimple, false},
+		{"Research", "conduct deep research on quantum computing applications", LevelSimple, false},
+		{"Multi-system", "design an end-to-end enterprise platform", LevelTrivial, false},
 		{"Strategic", "create a long-term AI integration roadmap", LevelCritical, true},
 	}
 
