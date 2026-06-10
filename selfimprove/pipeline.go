@@ -58,13 +58,13 @@ type SelfImprovePipeline struct {
 	notify         func(job *ImprovementJob)
 	skillGenerator *SkillGenerator
 	learner        *ExperienceLearner
+	selfImprover   *SelfImprover // shared with agent for unified stats
 }
 
 // NewSelfImprovePipeline creates a new pipeline instance
 func NewSelfImprovePipeline(root string, ck *codegraph.CodeKnowledge, lsp *codegraph.LSPClient, router *llm.Router, learner *ExperienceLearner) *SelfImprovePipeline {
 	var impact *codegraph.ImpactAnalyzer
 	if ck != nil && lsp != nil {
-		// Import codegraph from internal package: "github.com/nicholas/ai-agent/codegraph"
 		impact = codegraph.NewImpactAnalyzer(nil, lsp)
 	}
 
@@ -86,6 +86,11 @@ func NewSelfImprovePipeline(root string, ck *codegraph.CodeKnowledge, lsp *codeg
 		skillGenerator: skillGen,
 		learner:        learner,
 	}
+}
+
+// SetSelfImprover sets the shared SelfImprover for unified stats
+func (p *SelfImprovePipeline) SetSelfImprover(si *SelfImprover) {
+	p.selfImprover = si
 }
 
 // SetNotify sets the notification callback
@@ -471,32 +476,41 @@ func (p *SelfImprovePipeline) ValidateAndRegisterSkill(ctx context.Context, skil
 
 // GetExperienceStats returns statistics about the experience learner
 func (p *SelfImprovePipeline) GetExperienceStats() map[string]interface{} {
-	if p.learner == nil {
+	// Use shared SelfImprover's learner if available (unified with agent)
+	var learner *ExperienceLearner
+	if p.selfImprover != nil {
+		learner = p.selfImprover.GetLearner()
+	} else if p.learner != nil {
+		learner = p.learner
+	}
+
+	if learner == nil {
 		return map[string]interface{}{
 			"total_experiences": 0,
-			"message": "learner not initialized",
+			"message":           "learner not initialized",
 		}
 	}
 
 	stats := make(map[string]interface{})
-	stats["total_experiences"] = p.learner.GetTotalCount()
-	
+	stats["total_experiences"] = learner.GetTotalCount()
+	stats["pipeline_enabled"] = true
+
 	// Get recent experiences
-	recent := p.learner.GetRecentExperiences(10)
+	recent := learner.GetRecentExperiences(20)
 	toolCounts := make(map[string]int)
 	successCounts := make(map[string]int)
-	
+
 	for _, exp := range recent {
 		toolCounts[exp.Tool]++
 		if exp.Success {
 			successCounts[exp.Tool]++
 		}
 	}
-	
+
 	stats["recent_tool_usage"] = toolCounts
 	stats["recent_success_counts"] = successCounts
 	stats["recent_sample_size"] = len(recent)
-	
+
 	// Calculate success rates
 	successRates := make(map[string]float64)
 	for tool, count := range toolCounts {
@@ -505,6 +519,6 @@ func (p *SelfImprovePipeline) GetExperienceStats() map[string]interface{} {
 		}
 	}
 	stats["success_rates"] = successRates
-	
+
 	return stats
 }

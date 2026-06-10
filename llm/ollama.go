@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"log/slog"
 	"regexp"
 
 	"github.com/nicholas/ai-agent/config"
@@ -146,8 +147,24 @@ func (p *OllamaProvider) chatDirect(ctx context.Context, messages []Message, too
 		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
 
+	// Debug: log raw Ollama response content length
+	rawContent := ollamaResp.Message.Content
+	cleaned := stripThinkTags(rawContent)
+
+	// Fallback: if content is empty after stripping think tags but model provided thinking,
+	// use the thinking content as the response (Qwen3 sometimes puts all output in think tags)
+	if cleaned == "" && ollamaResp.Message.Thinking != "" {
+		cleaned = strings.TrimSpace(ollamaResp.Message.Thinking)
+		slog.Info("Ollama think-fallback", "thinking_len", len(cleaned))
+	} else if cleaned == "" && rawContent != "" {
+		// Last resort: use raw content if think tag stripping removed everything
+		cleaned = strings.TrimSpace(rawContent)
+	}
+
+	slog.Info("Ollama raw response", "content_len", len(rawContent), "thinking_len", len(ollamaResp.Message.Thinking), "cleaned_len", len(cleaned), "done_reason", ollamaResp.DoneReason)
+
 	response := &Response{
-		Content:    stripThinkTags(ollamaResp.Message.Content),
+		Content:    cleaned,
 		ToolCalls:  p.parseToolCalls(ollamaResp.Message.ToolCalls),
 		StopReason: p.mapStopReason(ollamaResp.DoneReason),
 		Model:      ollamaResp.Model,
@@ -289,6 +306,7 @@ type ollamaRequest struct {
 type ollamaMessage struct {
 	Role       string            `json:"role"`
 	Content    string            `json:"content"`
+	Thinking   string            `json:"thinking,omitempty"`
 	ToolCalls  []ollamaToolCall  `json:"tool_calls,omitempty"`
 }
 

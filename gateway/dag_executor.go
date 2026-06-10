@@ -29,26 +29,18 @@ type DAGPlan struct {
 
 // TaskResult represents the result of executing a task
 type TaskResult struct {
-	Step     int         `json:"step"`
-	Success  bool        `json:"success"`
-	Error    error       `json:"error,omitempty"`
-	Result   interface{} `json:"result,omitempty"`
+	Step     int           `json:"step"`
+	Success  bool          `json:"success"`
+	Error    string        `json:"error,omitempty"`
+	Result   interface{}   `json:"result,omitempty"`
 	Duration time.Duration `json:"duration,omitempty"`
 }
 
-func (tr TaskResult) MarshalJSON() ([]byte, error) {
-	type Alias TaskResult
-	aux := &struct {
-		ErrorMsg string `json:"error,omitempty"`
-		*Alias
-	}{
-		ErrorMsg: "",
-		Alias:    (*Alias)(&tr),
+// SetError sets the error from a Go error value.
+func (tr *TaskResult) SetError(err error) {
+	if err != nil {
+		tr.Error = err.Error()
 	}
-	if tr.Error != nil {
-		aux.ErrorMsg = tr.Error.Error()
-	}
-	return json.Marshal(aux)
 }
 
 // WorkerPool is a simple worker pool for concurrent execution
@@ -227,10 +219,7 @@ func (d *DAGExecutor) executeParallelWithWAL(ctx context.Context, plan DAGPlan, 
 						resultStr := fmt.Sprintf("%v", result.Result)
 						_ = d.wal.Checkpoint(dagID, stepID, "COMPLETED", resultStr)
 					} else {
-						errMsg := ""
-						if result.Error != nil {
-							errMsg = result.Error.Error()
-						}
+						errMsg := result.Error
 						_ = d.wal.CheckpointWithError(dagID, stepID, "FAILED", errMsg)
 					}
 				}
@@ -325,10 +314,7 @@ func (d *DAGExecutor) executeSequentialWithWAL(ctx context.Context, plan DAGPlan
 				resultStr := fmt.Sprintf("%v", result.Result)
 				_ = d.wal.Checkpoint(dagID, stepID, "COMPLETED", resultStr)
 			} else {
-				errMsg := ""
-				if result.Error != nil {
-					errMsg = result.Error.Error()
-				}
+				errMsg := result.Error
 				_ = d.wal.CheckpointWithError(dagID, stepID, "FAILED", errMsg)
 			}
 		}
@@ -373,7 +359,7 @@ func (d *DAGExecutor) executeSingleTask(ctx context.Context, task *DAGTask) Task
 				}
 			}
 		}
-		result.Error = err
+		result.SetError(err)
 		return result
 	}
 
@@ -393,7 +379,7 @@ func (d *DAGExecutor) executeWithFallback(ctx context.Context, task *DAGTask) Ta
 	err := d.simulateExecution(ctx, task)
 
 	if err != nil {
-		result.Error = fmt.Errorf("fallback failed: %w", err)
+		result.SetError(fmt.Errorf("fallback failed: %w", err))
 		return result
 	}
 

@@ -27,6 +27,11 @@ func NewSelfImprover(baseDir string) *SelfImprover {
 	return si
 }
 
+// GetLearner returns the underlying ExperienceLearner (for pipeline sharing)
+func (si *SelfImprover) GetLearner() *ExperienceLearner {
+	return si.learner
+}
+
 // RecordOutcome captures a tool execution outcome
 func (si *SelfImprover) RecordOutcome(task, tool string, success bool, duration time.Duration) error {
 	// Record in learner

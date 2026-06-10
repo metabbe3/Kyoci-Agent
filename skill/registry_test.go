@@ -123,12 +123,12 @@ func TestRegisterBuiltinSkills(t *testing.T) {
 		t.Fatalf("RegisterBuiltinSkills failed: %v", err)
 	}
 
-	if r.Count() != 8 {
-		t.Errorf("Expected 8 builtin skills, got %d", r.Count())
+	if r.Count() != 10 {
+		t.Errorf("Expected 10 builtin skills, got %d", r.Count())
 	}
 
 	names := r.List()
-	expected := []string{"math", "time", "hash", "encode", "uuid", "json_format", "health", "unit_convert"}
+	expected := []string{"math", "time", "hash", "encode", "uuid", "json_format", "health", "unit_convert", "url_encode", "weather"}
 	for _, exp := range expected {
 		found := false
 		for _, name := range names {

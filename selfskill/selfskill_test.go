@@ -62,8 +62,8 @@ func TestRecordAndGetCandidates(t *testing.T) {
 	if len(candidates) != 1 {
 		t.Errorf("Expected 1 candidate, got %d", len(candidates))
 	}
-	if candidates[0].Pattern != "create file" {
-		t.Errorf("Expected pattern 'create file', got %q", candidates[0].Pattern)
+	if candidates[0].Pattern != "create file test" {
+		t.Errorf("Expected pattern 'create file test', got %q", candidates[0].Pattern)
 	}
 	if candidates[0].Frequency != 3 {
 		t.Errorf("Expected frequency 3, got %d", candidates[0].Frequency)

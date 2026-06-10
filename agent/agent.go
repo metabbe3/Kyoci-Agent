@@ -124,7 +124,7 @@ func (a *Agent) Run(ctx context.Context, userInput string) (string, error) {
 		}
 
 		if a.config.Agent.Verbose {
-			slog.Debug("Agent iteration", "iter", i+1, "stop_reason", resp.StopReason, "input_tokens", resp.Usage.InputTokens, "output_tokens", resp.Usage.OutputTokens)
+			slog.Debug("Agent iteration", "iter", i+1, "stop_reason", resp.StopReason, "input_tokens", resp.Usage.InputTokens, "output_tokens", resp.Usage.OutputTokens, "content_len", len(resp.Content))
 		}
 
 		// Done — no tool calls
@@ -136,7 +136,11 @@ func (a *Agent) Run(ctx context.Context, userInput string) (string, error) {
 
 			// Record outcome for self-improvement
 			duration := time.Since(start)
-			a.learner.RecordOutcome(userInput, "agent", true, duration)
+			if err := a.learner.RecordOutcome(userInput, "agent", true, duration); err != nil {
+				slog.Warn("Self-improve record failed", "error", err)
+			} else if a.config.Agent.Verbose {
+				slog.Debug("Self-improve recorded", "task", truncate(userInput, 40), "duration", duration)
+			}
 
 			if a.config.Agent.Verbose {
 				slog.Debug("Agent completed", "duration", duration, "iterations", i+1)
@@ -161,9 +165,13 @@ func (a *Agent) Run(ctx context.Context, userInput string) (string, error) {
 
 				if err != nil {
 					result = fmt.Sprintf("Error: %v", err)
-					a.learner.RecordOutcome(tc.Name, tc.Name, false, duration)
+					if recErr := a.learner.RecordOutcome(tc.Name, tc.Name, false, duration); recErr != nil {
+						slog.Warn("Self-improve record failed", "tool", tc.Name, "error", recErr)
+					}
 				} else {
-					a.learner.RecordOutcome(tc.Name, tc.Name, true, duration)
+					if recErr := a.learner.RecordOutcome(tc.Name, tc.Name, true, duration); recErr != nil {
+						slog.Warn("Self-improve record failed", "tool", tc.Name, "error", recErr)
+					}
 				}
 
 				if a.config.Agent.Verbose {
@@ -240,6 +248,11 @@ func (a *Agent) GetLongTermMemory() *memory.JSONMemoryStore {
 // GetSelfImprover returns the self-improvement engine
 func (a *Agent) GetSelfImprover() *selfimprove.SelfImprover {
 	return a.learner
+}
+
+// SetSelfImprover replaces the self-improvement engine (for pipeline sharing)
+func (a *Agent) SetSelfImprover(si *selfimprove.SelfImprover) {
+	a.learner = si
 }
 
 // Reset clears short-term memory

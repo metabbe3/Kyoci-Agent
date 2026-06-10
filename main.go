@@ -307,11 +307,20 @@ func main() {
 		srv := api.NewServer(cfg, ag, router, toolReg)
 		srv.SetSkillRegistry(skillReg)
 
-		// Initialize self-improvement pipeline
-		improveDataDir := os.TempDir() + "/ai-agent-selfimprove"
+		// Initialize self-improvement pipeline — shared with agent
+		improveDataDir := cfg.Agent.DataDir
+		if improveDataDir == "" {
+			improveDataDir = "./data"
+		}
 		os.MkdirAll(improveDataDir, 0o755)
+
+		// Create one SelfImprover shared between agent and pipeline
+		sharedImprover := selfimprove.NewSelfImprover(improveDataDir)
+		ag.SetSelfImprover(sharedImprover)
+
 		learner := selfimprove.NewExperienceLearner(improveDataDir + "/experiences.json")
 		pipeline := selfimprove.NewSelfImprovePipeline(".", codeKnowledge, nil, router, learner)
+		pipeline.SetSelfImprover(sharedImprover)
 		srv.SetSelfImprovePipeline(pipeline)
 
 		slog.Info("Starting API server", "host", cfg.Server.Host, "port", cfg.Server.Port)

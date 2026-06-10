@@ -241,7 +241,7 @@ func TestTaskResult_Marshaling(t *testing.T) {
 	result := TaskResult{
 		Step:     1,
 		Success:  false,
-		Error:    errors.New("test error"),
+		Error:    "test error",
 		Duration: 100 * time.Millisecond,
 	}
 
