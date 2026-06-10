@@ -358,7 +358,7 @@ class AgentTestHarness:
                     headers={},  # No Content-Type
                     method='POST'
                 )
-                with urllib.request.urlopen(req, timeout=5) as response:
+                with urllib.request.urlopen(req, timeout=15) as response:
                     data = response.read()
                     return "Request accepted without Content-Type", ""
             except urllib.error.HTTPError as e:

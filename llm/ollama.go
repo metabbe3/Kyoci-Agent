@@ -29,6 +29,7 @@ type OllamaProvider struct {
 	cfg    config.ProviderConfig
 	cache  *ResponseCache
 	client *http.Client
+	queue  *OllamaQueue // serial request queue (nil = no queue, direct call)
 }
 
 // NewOllamaProvider creates a new Ollama provider with a 30-second timeout
@@ -46,13 +47,32 @@ func (p *OllamaProvider) SetCache(cache *ResponseCache) {
 	p.cache = cache
 }
 
+// SetQueue sets the serial request queue for Ollama (optional).
+// When set, all Chat/Stream calls go through the queue so only 1
+// request hits the Ollama server at a time.
+func (p *OllamaProvider) SetQueue(q *OllamaQueue) {
+	p.queue = q
+}
+
 // Name returns the provider name
 func (p *OllamaProvider) Name() string {
 	return "ollama"
 }
 
-// Chat sends messages and returns a response
+// Chat sends messages and returns a response.
+// If a serial queue is configured, the request goes through it.
 func (p *OllamaProvider) Chat(ctx context.Context, messages []Message, tools []ToolSchema) (*Response, error) {
+	// Route through serial queue if configured
+	if p.queue != nil {
+		return p.queue.Submit(ctx, func(qCtx context.Context) (*Response, error) {
+			return p.chatDirect(qCtx, messages, tools)
+		})
+	}
+	return p.chatDirect(ctx, messages, tools)
+}
+
+// chatDirect performs the actual HTTP call to Ollama (no queue).
+func (p *OllamaProvider) chatDirect(ctx context.Context, messages []Message, tools []ToolSchema) (*Response, error) {
 	// Extract system message for caching
 	var systemPrompt string
 	for _, msg := range messages {

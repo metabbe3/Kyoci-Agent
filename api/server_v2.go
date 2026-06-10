@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/nicholas/ai-agent/security"
 	"github.com/nicholas/ai-agent/agent"
 	"github.com/nicholas/ai-agent/config"
 	"github.com/nicholas/ai-agent/llm"
@@ -18,35 +19,53 @@ import (
 
 // ServerV2 is the HTTP API v2 server with security middleware
 type ServerV2 struct {
-	agent       *agent.Agent  // Global agent for non-session operations (deprecated, unused in chat)
-	router      *llm.Router
-	toolReg     *tools.Registry
-	skillReg    *skill.Registry
-	config      *config.Config
-	apiKey      string
-	rateLimiter *RateLimiter
-	sessions    *SessionManager
-	agentFactory func() *agent.Agent  // Factory to create per-session agents
-	httpServer  *http.Server
+	agent             *agent.Agent              // Global agent for non-session operations (deprecated, unused in chat)
+	router            *llm.Router
+	toolReg           *tools.Registry
+	skillReg          *skill.Registry
+	config            *config.Config
+	auth              *security.APIKeyAuth       // API key authentication
+	rateLimiter       *security.RateLimiter      // Rate limiting
+	sessions          *SessionManager
+	agentFactory      func() *agent.Agent        // Factory to create per-session agents
+	httpServer        *http.Server
+	rateLimitEnabled  bool                       // Enable rate limiting based on config
 }
 
-// NewServerV2 creates a new API v2 server
+// NewServerV2 creates a new API v2 server with security middleware
 func NewServerV2(cfg *config.Config, ag *agent.Agent, r *llm.Router, tr *tools.Registry, apiKey string) *ServerV2 {
 	// Create agent factory for per-session agents
 	agentFactory := func() *agent.Agent {
 		return agent.NewV2(cfg, r, tr)
 	}
 
-	return &ServerV2{
-		agent:       ag,
-		router:      r,
-		toolReg:     tr,
-		config:      cfg,
-		apiKey:      apiKey,
-		rateLimiter: NewRateLimiter(100, time.Minute), // 100 requests per minute
-		sessions:    NewSessionManager(agentFactory),
-		agentFactory: agentFactory,
+	// Initialize API key auth if key is provided (opt-in)
+	var auth *security.APIKeyAuth
+	if apiKey != "" {
+		auth = security.NewAPIKeyAuth()
+		// Add the provided API key with admin role
+		auth.AddKey(apiKey, "admin", []string{"admin"}, 60)
 	}
+
+	// Initialize rate limiter (100 requests per minute by default)
+	rateLimiter := security.NewRateLimiter(100)
+
+	return &ServerV2{
+		agent:            ag,
+		router:           r,
+		toolReg:          tr,
+		config:           cfg,
+		auth:             auth,
+		rateLimiter:      rateLimiter,
+		rateLimitEnabled: true,
+		sessions:         NewSessionManager(agentFactory),
+		agentFactory:     agentFactory,
+	}
+}
+
+// SetRateLimitEnabled enables or disables rate limiting
+func (s *ServerV2) SetRateLimitEnabled(enabled bool) {
+	s.rateLimitEnabled = enabled
 }
 
 // SetSkillRegistry sets the skill registry for Tier 0 matching
@@ -96,21 +115,28 @@ func (s *ServerV2) Shutdown(ctx context.Context) error {
 // withSecurity wraps a handler with API key and rate limiting
 func (s *ServerV2) withSecurity(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// Check API key
-		if s.apiKey != "" {
+		// API key authentication (opt-in: only if auth is configured)
+		if s.auth != nil {
 			receivedKey := r.Header.Get("X-API-Key")
-			if receivedKey != s.apiKey {
+			_, valid := s.auth.Validate(receivedKey)
+			if !valid {
 				jsonError(w, http.StatusUnauthorized, "invalid API key")
 				return
 			}
 		}
 
-		// Rate limiting by IP
-		ip := r.RemoteAddr
-		if !s.rateLimiter.Allow(ip) {
-			w.Header().Set("Retry-After", "60")
-			jsonError(w, http.StatusTooManyRequests, "rate limit exceeded")
-			return
+		// Rate limiting (opt-in: only if enabled)
+		if s.rateLimitEnabled && s.rateLimiter != nil {
+			// Use API key as rate limit key if authenticated, otherwise use IP
+			key := r.Header.Get("X-API-Key")
+			if key == "" {
+				key = r.RemoteAddr
+			}
+			if !s.rateLimiter.Allow(key) {
+				w.Header().Set("Retry-After", "60")
+				jsonError(w, http.StatusTooManyRequests, "rate limit exceeded")
+				return
+			}
 		}
 
 		next(w, r)
@@ -120,11 +146,11 @@ func (s *ServerV2) withSecurity(next http.HandlerFunc) http.HandlerFunc {
 // handleV2Chat handles POST /v2/chat
 func (s *ServerV2) handleV2Chat(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		SessionID  string  `json:"session_id"`
-		Message    string  `json:"message"`
-		Mode       string  `json:"mode"`
-		Model      string  `json:"model"`
-		MaxTokens  int     `json:"max_tokens"`
+		SessionID   string  `json:"session_id"`
+		Message     string  `json:"message"`
+		Mode        string  `json:"mode"`
+		Model       string  `json:"model"`
+		MaxTokens   int     `json:"max_tokens"`
 		Temperature float64 `json:"temperature"`
 	}
 
@@ -317,23 +343,24 @@ func (s *ServerV2) handleV2Status(w http.ResponseWriter, r *http.Request) {
 		"status": "ok",
 		"version": "2.0.0",
 		"providers": map[string]interface{}{
-			"default": s.config.LLM.DefaultProvider,
+			"default":   s.config.LLM.DefaultProvider,
 			"available": providers,
-			"count": len(providers),
+			"count":     len(providers),
 		},
 		"tools": map[string]interface{}{
-			"count": len(tools),
+			"count":   len(tools),
 			"enabled": len(s.config.Tools.Enabled),
 		},
 		"memory": map[string]interface{}{
-			"tokens_used": memory.TokenCount(),
-			"max_tokens": memory.GetMaxTokens(),
-			"usage_percent": memory.GetTokenUsage() * 100,
+			"tokens_used":    memory.TokenCount(),
+			"max_tokens":     memory.GetMaxTokens(),
+			"usage_percent":  memory.GetTokenUsage() * 100,
 		},
 		"sessions": s.sessions.Count(),
 		"long_term_memory": map[string]interface{}{
 			"enabled": longTermMem != nil,
 		},
+		"ollama_queue": s.router.OllamaQueueStats(),
 	})
 }
 
@@ -355,10 +382,10 @@ func (s *ServerV2) handleV2Memory(w http.ResponseWriter, r *http.Request) {
 	longTermMem := s.agent.GetLongTermMemory()
 
 	shortTermStats := map[string]interface{}{
-		"tokens_used":   memory.TokenCount(),
-		"max_tokens":    memory.GetMaxTokens(),
-		"usage_percent": memory.GetTokenUsage() * 100,
-		"message_count": len(memory.GetMessages()),
+		"tokens_used":    memory.TokenCount(),
+		"max_tokens":     memory.GetMaxTokens(),
+		"usage_percent":  memory.GetTokenUsage() * 100,
+		"message_count":  len(memory.GetMessages()),
 	}
 
 	response := map[string]interface{}{
@@ -441,64 +468,6 @@ func toJson(v interface{}) string {
 	return string(b)
 }
 
-// ── Rate Limiter (Sliding Window) ──
-
-type RateLimiter struct {
-	requests map[string]*timeWindow
-	maxRequests int
-	windowDuration time.Duration
-	mu sync.RWMutex
-}
-
-type timeWindow struct {
-	timestamps []time.Time
-	mu         sync.Mutex
-}
-
-func NewRateLimiter(maxRequests int, windowDuration time.Duration) *RateLimiter {
-	return &RateLimiter{
-		requests:      make(map[string]*timeWindow),
-		maxRequests:  maxRequests,
-		windowDuration: windowDuration,
-	}
-}
-
-func (rl *RateLimiter) Allow(ip string) bool {
-	rl.mu.Lock()
-	window, exists := rl.requests[ip]
-	if !exists {
-		window = &timeWindow{
-			timestamps: make([]time.Time, 0),
-		}
-		rl.requests[ip] = window
-	}
-	rl.mu.Unlock()
-
-	window.mu.Lock()
-	defer window.mu.Unlock()
-
-	now := time.Now()
-	cutoff := now.Add(-rl.windowDuration)
-
-	// Remove old timestamps
-	valid := make([]time.Time, 0)
-	for _, ts := range window.timestamps {
-		if ts.After(cutoff) {
-			valid = append(valid, ts)
-		}
-	}
-	window.timestamps = valid
-
-	// Check if under limit
-	if len(window.timestamps) >= rl.maxRequests {
-		return false
-	}
-
-	// Add current request
-	window.timestamps = append(window.timestamps, now)
-	return true
-}
-
 // ── Session Manager ──
 
 type Session struct {
@@ -506,12 +475,12 @@ type Session struct {
 	CreatedAt time.Time
 	LastUsed  time.Time
 	mu        sync.RWMutex
-	agent     *agent.Agent  // Per-session agent instance
+	agent     *agent.Agent // Per-session agent instance
 }
 
 type SessionManager struct {
-	sessions      sync.Map
-	agentFactory  func() *agent.Agent  // Factory to create per-session agents
+	sessions     sync.Map
+	agentFactory func() *agent.Agent // Factory to create per-session agents
 }
 
 func NewSessionManager(agentFactory func() *agent.Agent) *SessionManager {

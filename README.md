@@ -232,110 +232,6 @@ mcp:
 
 ---
 
-## 🔌 Using Protobuf / gRPC
-
-### Proto Definition
-
-The gRPC API is defined in `proto/agent.proto`:
-
-```protobuf
-syntax = "proto3";
-package agent;
-
-// Kyoci Agent gRPC Service
-service AgentService {
-  // Process a single request
-  rpc Process(AgentRequest) returns (AgentResponse);
-  
-  // Stream processing with real-time updates
-  rpc StreamProcess(AgentRequest) returns (stream AgentResponse);
-  
-  // Health check
-  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
-}
-```
-
-### Regenerate Protobuf Files
-
-If you modify `proto/agent.proto`, regenerate the Go files:
-
-```bash
-# Install protoc plugins
-go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
-go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
-
-# Generate
-protoc --go_out=. --go_opt=paths=source_relative \
-       --go-grpc_out=. --go-grpc_opt=paths=source_relative \
-       proto/agent.proto
-```
-
-### gRPC Client Example
-
-```go
-package main
-
-import (
-    "context"
-    "log"
-    "time"
-
-    pb "github.com/nicholas/ai-agent/proto"
-    "google.golang.org/grpc"
-    "google.golang.org/grpc/credentials/insecure"
-)
-
-func main() {
-    conn, err := grpc.NewClient("localhost:50051",
-        grpc.WithTransportCredentials(insecure.NewCredentials()))
-    if err != nil {
-        log.Fatal(err)
-    }
-    defer conn.Close()
-
-    client := pb.NewAgentServiceClient(conn)
-
-    ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-    defer cancel()
-
-    // Simple request
-    resp, err := client.Process(ctx, &pb.AgentRequest{
-        Prompt:     "analyze the auth service for security issues",
-        Provider:   "openai",
-        Model:      "gpt-4o",
-        MaxTokens:  4096,
-        SessionId:  "my-session-1",
-    })
-    if err != nil {
-        log.Fatal(err)
-    }
-
-    fmt.Println(resp.Content)
-}
-```
-
-### Streaming Example
-
-```go
-stream, err := client.StreamProcess(ctx, &pb.AgentRequest{
-    Prompt: "explain the codebase architecture",
-})
-if err != nil {
-    log.Fatal(err)
-}
-
-for {
-    resp, err := stream.Recv()
-    if err == io.EOF {
-        break
-    }
-    if err != nil {
-        log.Fatal(err)
-    }
-    fmt.Print(resp.Content)
-}
-```
-
 ---
 
 ## 🔗 MCP Integration Guide
@@ -461,34 +357,357 @@ volumes:
 
 ---
 
-## 🔧 REST API
+## 🔧 REST API v2
 
-### Chat
+### POST /v2/chat — Non-streaming chat
 
 ```bash
-curl -X POST http://localhost:8080/api/v2/chat \
+curl -X POST http://localhost:8080/v2/chat \
   -H "Content-Type: application/json" \
-  -H "X-API-Key: your-key" \
   -d '{
-    "prompt": "analyze this codebase for security issues",
-    "provider": "openai",
-    "session_id": "optional-session-id"
+    "message": "analyze this codebase for security issues",
+    "session_id": "optional-session-id",
+    "mode": "auto",
+    "model": "gpt-4o",
+    "max_tokens": 4096,
+    "temperature": 0.7
   }'
 ```
 
-### Streaming (SSE)
+**Response:**
+```json
+{
+  "message": "I found 3 security issues...",
+  "model": "gpt-4o",
+  "session_id": "optional-session-id",
+  "tier": 2,
+  "tokens": 1247
+}
+```
+
+### POST /v2/stream — SSE streaming
 
 ```bash
-curl -N http://localhost:8080/api/v2/chat/stream \
+curl -N -X POST http://localhost:8080/v2/stream \
   -H "Content-Type: application/json" \
-  -d '{"prompt": "explain the architecture", "provider": "ollama"}'
+  -d '{
+    "message": "explain the architecture",
+    "session_id": "optional-session-id",
+    "mode": "auto",
+    "model": "qwen3:8b"
+  }'
 ```
 
-### Health
+**Response (SSE events):**
+```
+data: {"content":"The architecture is..."}
+data: {"done":true,"tokens":843}
+```
+
+### GET /v2/status — Health and status
 
 ```bash
-curl http://localhost:8080/api/v2/health
+curl http://localhost:8080/v2/status
 ```
+
+**Response:**
+```json
+{
+  "status": "healthy",
+  "version": "4.3.0",
+  "providers": {
+    "ollama": {"enabled": true, "status": "ready"},
+    "openai": {"enabled": true, "status": "ready"},
+    "anthropic": {"enabled": false, "status": "disabled"},
+    "google": {"enabled": false, "status": "disabled"}
+  },
+  "tools": {"count": 15, "enabled": 15},
+  "memory": {
+    "short_term": {"messages": 12, "tokens": 3420},
+    "long_term": {"entries": 156, "fts_enabled": true}
+  },
+  "sessions": {"active": 3, "total": 47},
+  "ollama_queue": {
+    "depth": 2,
+    "capacity": 32,
+    "processing": false
+  },
+  "long_term_memory": {"backend": "sqlite", "db_path": "data/memory.db"}
+}
+```
+
+### GET /v2/tools — List available tools
+
+```bash
+curl http://localhost:8080/v2/tools
+```
+
+**Response:**
+```json
+{
+  "tools": [
+    {"name": "web_search", "description": "Search the web"},
+    {"name": "code_search", "description": "Search codebase"},
+    ...
+  ],
+  "count": 15,
+  "enabled": 15
+}
+```
+
+### GET /v2/memory — Memory statistics
+
+```bash
+curl http://localhost:8080/v2/memory
+```
+
+**Response:**
+```json
+{
+  "short_term": {"messages": 12, "tokens": 3420},
+  "long_term": {"entries": 156, "fts_enabled": true}
+}
+```
+
+### POST /v2/session/new — Create session
+
+```bash
+curl -X POST http://localhost:8080/v2/session/new
+```
+
+**Response:**
+```json
+{
+  "session_id": "uuid-v4-session-id",
+  "created_at": "2025-06-10T14:30:00Z"
+}
+```
+
+### DELETE /v2/session/{id} — Delete session
+
+```bash
+curl -X DELETE http://localhost:8080/v2/session/uuid-v4-session-id
+```
+
+**Response:**
+```json
+{
+  "session_id": "uuid-v4-session-id",
+  "deleted": true
+}
+```
+
+### POST /v2/tool — Execute tool directly
+
+```bash
+curl -X POST http://localhost:8080/v2/tool \
+  -H "Content-Type: application/json" \
+  -d '{
+    "tool_name": "web_search",
+    "parameters": {
+      "query": "Go best practices 2025"
+    }
+  }'
+```
+
+**Response:**
+```json
+{
+  "result": "...search results...",
+  "error": null
+}
+```
+
+### WebSocket — /v2/ws
+
+Connect for real-time bidirectional communication:
+
+```javascript
+const ws = new WebSocket('ws://localhost:8080/v2/ws');
+
+ws.onmessage = (event) => {
+  const msg = JSON.parse(event.data);
+  // msg.type: "chat" | "tool" | "status" | "error" | "pong"
+};
+
+ws.send(JSON.stringify({
+  type: "chat",
+  message: "hello",
+  session_id: "my-session"
+}));
+```
+
+---
+
+## 🔌 gRPC API
+
+The gRPC service is available on port `50051` (default).
+
+### Proto Definition
+
+```protobuf
+syntax = "proto3";
+package agent;
+
+service AgentService {
+  rpc Chat(ChatRequest) returns (ChatResponse);
+  rpc StreamChat(ChatRequest) returns (stream ChatResponse);
+  rpc Status(StatusRequest) returns (StatusResponse);
+}
+
+message ChatRequest {
+  string message = 1;
+  string provider = 2;
+  string session_id = 3;
+}
+
+message ChatResponse {
+  string message = 1;
+  string model = 2;
+  int32 tier = 3;
+  int64 tokens = 4;
+  string session_id = 5;
+}
+
+message StatusRequest {}
+
+message StatusResponse {
+  string status = 1;
+  string version = 2;
+  int32 providers = 3;
+  int32 tools = 4;
+}
+```
+
+### gRPC Client Example (Go)
+
+```go
+package main
+
+import (
+    "context"
+    "log"
+    "time"
+
+    pb "github.com/nicholas/ai-agent/grpc/proto"
+    "google.golang.org/grpc"
+    "google.golang.org/grpc/credentials/insecure"
+)
+
+func main() {
+    conn, err := grpc.NewClient("localhost:50051",
+        grpc.WithTransportCredentials(insecure.NewCredentials()))
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer conn.Close()
+
+    client := pb.NewAgentServiceClient(conn)
+    ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+    defer cancel()
+
+    // Simple request
+    resp, err := client.Chat(ctx, &pb.ChatRequest{
+        Message:    "analyze the auth service for security issues",
+        Provider:  "openai",
+        SessionId: "my-session-1",
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    log.Printf("Response: %s (Tier: %d, Tokens: %d)",
+        resp.Message, resp.Tier, resp.Tokens)
+}
+
+func streamExample() {
+    conn, _ := grpc.NewClient("localhost:50051",
+        grpc.WithTransportCredentials(insecure.NewCredentials()))
+    defer conn.Close()
+
+    client := pb.NewAgentServiceClient(conn)
+    ctx, _ := context.WithTimeout(context.Background(), 5*time.Minute)
+
+    stream, err := client.StreamChat(ctx, &pb.ChatRequest{
+        Message:   "explain the codebase architecture",
+        Provider: "ollama",
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    for {
+        resp, err := stream.Recv()
+        if err == io.EOF {
+            break
+        }
+        if err != nil {
+            log.Fatal(err)
+        }
+        fmt.Print(resp.Message)
+    }
+}
+```
+
+---
+
+## ⚡ Ollama Request Queue
+
+For single-GPU Ollama deployments, Kyoci Agent includes a **built-in request queue**:
+
+- **Serial execution** — One LLM request at a time (no GPU contention)
+- **Async back-pressure** — Accepts up to 32 pending requests, blocks beyond
+- **Fair FIFO ordering** — First-in-first-out processing
+- **Metrics** — Queue depth and status exposed at `/v2/status`
+
+**Why it matters:** Without queuing, concurrent Ollama requests can cause OOM crashes or extreme latency. The queue ensures predictable, stable performance on resource-constrained hardware.
+
+---
+
+## 🛡️ Security Middleware
+
+Kyoci Agent includes optional security features (disabled by default, enable in config):
+
+### API Key Authentication
+
+```yaml
+security:
+  auth:
+    enabled: true
+    api_keys:
+      - "sha256:5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8"  # "secret"
+```
+
+Uses SHA256 prefix matching for secure, constant-time verification.
+
+### Rate Limiting
+
+```yaml
+security:
+  rate_limit:
+    enabled: true
+    requests_per_minute: 60
+    window_size_seconds: 60
+```
+
+Sliding window token bucket algorithm — accurate and memory-efficient.
+
+### Input Sanitization
+
+Path traversal, command injection, and template injection are automatically sanitized. All user inputs are validated before execution.
+
+---
+
+## 💾 WAL Durable Execution
+
+The DAGExecutor now supports **Write-Ahead Logging** for crash recovery:
+
+- **Automatic checkpointing** — After each DAG step, state is persisted
+- **Crash recovery** — On restart, incomplete DAGs are resumed from checkpoint
+- **Idempotent steps** — Safe to retry failed operations
+- **Storage** — SQLite-backed WAL (`data/dag_wal.db`)
+
+**Use case:** Long-running multi-step plans (self-improvement pipeline, code refactoring) can safely survive server restarts.
 
 ---
 

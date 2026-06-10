@@ -51,3 +51,5 @@ data/wal/
 bin/
 bin/
 api/knowledge.json
+ai-agent
+bin/

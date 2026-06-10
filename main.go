@@ -181,7 +181,13 @@ func main() {
 	defer connPool.CloseAll()
 
 	// ── DAG Executor ──
-	_ = gateway.NewDAGExecutor(*maxWorkers, 5*time.Minute, nil)
+	walPath := "data/wal"
+	wal, err := gateway.NewWAL(walPath)
+	if err != nil {
+		slog.Error("Failed to create WAL", "error", err)
+		os.Exit(1)
+	}
+	_ = gateway.NewDAGExecutor(*maxWorkers, 5*time.Minute, wal)
 
 	// ── Tools ──
 	toolReg := tools.NewRegistry()

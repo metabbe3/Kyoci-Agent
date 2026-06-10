@@ -47,7 +47,9 @@ func NewRouter(cfg *config.Config) *Router {
 		case "anthropic":
 			provider = NewAnthropicProvider(pcfg)
 		case "ollama":
-			provider = NewOllamaProvider(pcfg)
+			op := NewOllamaProvider(pcfg)
+			op.SetQueue(NewOllamaQueue(32)) // serial queue, depth 32
+			provider = op
 		case "google":
 			provider = NewGoogleProvider(pcfg)
 		default:
@@ -173,4 +175,30 @@ func (r *Router) ClearCache() error {
 		return nil
 	}
 	return r.cache.Clear()
+}
+
+// OllamaQueueStats returns queue statistics from the Ollama provider if available.
+// Returns nil if Ollama provider is not configured or has no queue.
+func (r *Router) OllamaQueueStats() map[string]interface{} {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	// Try to get Ollama provider
+	op, ok := r.providers["ollama"]
+	if !ok {
+		return nil
+	}
+
+	// Type assert to OllamaProvider to access its queue
+	ollamaProvider, ok := op.(*OllamaProvider)
+	if !ok {
+		return nil
+	}
+
+	// Return nil if queue is not configured
+	if ollamaProvider.queue == nil {
+		return nil
+	}
+
+	return ollamaProvider.queue.Stats()
 }
