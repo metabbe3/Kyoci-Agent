@@ -1,0 +1,74 @@
+agent:
+  name: "Kyoci Agent"
+  version: "4.3.0"
+  max_iterations: 10
+  system_prompt: "You are an intelligent autonomous AI agent. Follow the ReAct framework: Think → Act → Observe. Use tools when needed. Be concise and accurate."
+  temperature: 0.7
+  max_tokens: 4096
+  verbose: true
+  template: "system"        # system, coder, researcher, analyst, browser, creative
+  data_dir: "./data"         # self-improvement data storage
+
+llm:
+  default_provider: ollama
+  fallback: [openai, anthropic, google]
+  providers:
+    openai:
+      api_key: ""
+      model: gpt-4o
+      max_tokens: 4096
+      temperature: 0.7
+    anthropic:
+      api_key: ""
+      model: claude-sonnet-4-20250514
+      max_tokens: 4096
+      temperature: 0.7
+    ollama:
+      base_url: "http://192.168.2.1:11434"
+      model: qwen3:8b
+      max_tokens: 4096
+      temperature: 0.7
+    google:
+      api_key: ""
+      model: gemini-2.0-flash
+      max_tokens: 4096
+      temperature: 0.7
+
+memory:
+  type: conversation
+  max_tokens: 8192
+  buffer_size: 50
+  long_term_path: "./data/memory.json"
+  compaction_threshold: 0.75
+
+server:
+  host: "0.0.0.0"
+  port: 8080
+
+tools:
+  enabled:
+    - web_search
+    - calculator
+    - file_handler
+    - browser
+    - terminal
+    - vision
+    - http_client
+    - web_scraper
+    - pdf
+    - code_exec
+    - database
+    - email
+    - image_gen
+    - scheduler
+    - delegation
+  sandbox: false
+  work_dir: "."
+
+routing:
+  tier_bindings:
+    tier0: "builtin"
+    tier1: "ollama"
+    tier2: "openai"
+    tier1_fallback: "reject"
+    tier2_fallback: "anthropic"

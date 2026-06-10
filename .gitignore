@@ -1,0 +1,50 @@
+# Binaries
+bin/
+*.exe
+
+# Build artifacts
+*.o
+*.a
+*.so
+
+# Data directories
+data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Cache
+data/cache/
+*.cache
+
+# Config (keep template)
+config/local.yaml
+config/*.local.yaml
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Temp
+tmp/
+temp/
+
+# Plans
+.hermes/
+
+# WAL files
+data/wal/
+
+# Memory backup
+*.bak
