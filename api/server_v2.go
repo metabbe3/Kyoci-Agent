@@ -18,7 +18,7 @@ import (
 
 // ServerV2 is the HTTP API v2 server with security middleware
 type ServerV2 struct {
-	agent       *agent.Agent
+	agent       *agent.Agent  // Global agent for non-session operations (deprecated, unused in chat)
 	router      *llm.Router
 	toolReg     *tools.Registry
 	skillReg    *skill.Registry
@@ -26,11 +26,17 @@ type ServerV2 struct {
 	apiKey      string
 	rateLimiter *RateLimiter
 	sessions    *SessionManager
+	agentFactory func() *agent.Agent  // Factory to create per-session agents
 	httpServer  *http.Server
 }
 
 // NewServerV2 creates a new API v2 server
 func NewServerV2(cfg *config.Config, ag *agent.Agent, r *llm.Router, tr *tools.Registry, apiKey string) *ServerV2 {
+	// Create agent factory for per-session agents
+	agentFactory := func() *agent.Agent {
+		return agent.NewV2(cfg, r, tr)
+	}
+
 	return &ServerV2{
 		agent:       ag,
 		router:      r,
@@ -38,7 +44,8 @@ func NewServerV2(cfg *config.Config, ag *agent.Agent, r *llm.Router, tr *tools.R
 		config:      cfg,
 		apiKey:      apiKey,
 		rateLimiter: NewRateLimiter(100, time.Minute), // 100 requests per minute
-		sessions:    NewSessionManager(),
+		sessions:    NewSessionManager(agentFactory),
+		agentFactory: agentFactory,
 	}
 }
 
@@ -136,7 +143,7 @@ func (s *ServerV2) handleV2Chat(w http.ResponseWriter, r *http.Request) {
 
 	// Set mode if specified
 	if req.Mode != "" {
-		s.agent.SetMode(req.Mode)
+		sess.SetMode(req.Mode)
 	}
 
 	// Override model if specified (requires temporary config adjustment)
@@ -166,7 +173,8 @@ func (s *ServerV2) handleV2Chat(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	response, err := s.agent.Run(ctx, req.Message)
+	ag := sess.GetAgent()
+	response, err := ag.Run(ctx, req.Message)
 
 	// Restore original config
 	if originalModel != "" {
@@ -178,12 +186,13 @@ func (s *ServerV2) handleV2Chat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	memory := s.agent.GetMemory()
+	memory := ag.GetMemory()
 	tokens := memory.TokenCount()
 
 	jsonResp(w, http.StatusOK, map[string]interface{}{
 		"message":    response,
 		"model":      s.config.LLM.DefaultProvider,
+		"tier":       1,
 		"tokens":     tokens,
 		"session_id": sess.ID,
 	})
@@ -215,11 +224,11 @@ func (s *ServerV2) handleV2Stream(w http.ResponseWriter, r *http.Request) {
 
 	// Set mode if specified
 	if req.Mode != "" {
-		s.agent.SetMode(req.Mode)
+		sess.SetMode(req.Mode)
 	}
 
 	ctx := r.Context()
-	ch, err := s.agent.Stream(ctx, req.Message)
+	ch, err := sess.GetAgent().Stream(ctx, req.Message)
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, fmt.Sprintf("stream error: %v", err))
 		return
@@ -237,7 +246,7 @@ func (s *ServerV2) handleV2Stream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	memory := s.agent.GetMemory()
+	memory := sess.GetAgent().GetMemory()
 	tokens := memory.TokenCount()
 
 	for chunk := range ch {
@@ -497,27 +506,44 @@ type Session struct {
 	CreatedAt time.Time
 	LastUsed  time.Time
 	mu        sync.RWMutex
+	agent     *agent.Agent  // Per-session agent instance
 }
 
 type SessionManager struct {
-	sessions sync.Map
+	sessions      sync.Map
+	agentFactory  func() *agent.Agent  // Factory to create per-session agents
 }
 
-func NewSessionManager() *SessionManager {
-	sm := &SessionManager{}
+func NewSessionManager(agentFactory func() *agent.Agent) *SessionManager {
+	sm := &SessionManager{
+		agentFactory: agentFactory,
+	}
 	go sm.cleanup()
 	return sm
 }
 
 func (sm *SessionManager) Create() *Session {
 	id := generateSessionID()
+	// Create a new agent for this session
+	agentInstance := sm.agentFactory()
 	sess := &Session{
 		ID:        id,
 		CreatedAt: time.Now(),
 		LastUsed:  time.Now(),
+		agent:     agentInstance,
 	}
 	sm.sessions.Store(id, sess)
 	return sess
+}
+
+// GetAgent returns the session's agent instance
+func (s *Session) GetAgent() *agent.Agent {
+	return s.agent
+}
+
+// SetMode sets the mode on the session's agent
+func (s *Session) SetMode(mode string) {
+	s.agent.SetMode(mode)
 }
 
 func (sm *SessionManager) GetOrCreate(id string) *Session {

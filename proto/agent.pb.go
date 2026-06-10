@@ -21,17 +21,13 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-// Chat request with session tracking
 type ChatRequest struct {
-	state          protoimpl.MessageState `protogen:"open.v1"`
-	SessionId      string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
-	Message        string                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
-	Mode           string                 `protobuf:"bytes,3,opt,name=mode,proto3" json:"mode,omitempty"`
-	PreferredModel string                 `protobuf:"bytes,4,opt,name=preferred_model,json=preferredModel,proto3" json:"preferred_model,omitempty"`
-	MaxTokens      int32                  `protobuf:"varint,5,opt,name=max_tokens,json=maxTokens,proto3" json:"max_tokens,omitempty"`
-	Temperature    float64                `protobuf:"fixed64,6,opt,name=temperature,proto3" json:"temperature,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Message       string                 `protobuf:"bytes,1,opt,name=message,proto3" json:"message,omitempty"`
+	Provider      string                 `protobuf:"bytes,2,opt,name=provider,proto3" json:"provider,omitempty"`
+	SessionId     string                 `protobuf:"bytes,3,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ChatRequest) Reset() {
@@ -64,13 +60,6 @@ func (*ChatRequest) Descriptor() ([]byte, []int) {
 	return file_agent_proto_rawDescGZIP(), []int{0}
 }
 
-func (x *ChatRequest) GetSessionId() string {
-	if x != nil {
-		return x.SessionId
-	}
-	return ""
-}
-
 func (x *ChatRequest) GetMessage() string {
 	if x != nil {
 		return x.Message
@@ -78,43 +67,27 @@ func (x *ChatRequest) GetMessage() string {
 	return ""
 }
 
-func (x *ChatRequest) GetMode() string {
+func (x *ChatRequest) GetProvider() string {
 	if x != nil {
-		return x.Mode
+		return x.Provider
 	}
 	return ""
 }
 
-func (x *ChatRequest) GetPreferredModel() string {
+func (x *ChatRequest) GetSessionId() string {
 	if x != nil {
-		return x.PreferredModel
+		return x.SessionId
 	}
 	return ""
 }
 
-func (x *ChatRequest) GetMaxTokens() int32 {
-	if x != nil {
-		return x.MaxTokens
-	}
-	return 0
-}
-
-func (x *ChatRequest) GetTemperature() float64 {
-	if x != nil {
-		return x.Temperature
-	}
-	return 0
-}
-
-// Chat response with metadata
 type ChatResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Message       string                 `protobuf:"bytes,1,opt,name=message,proto3" json:"message,omitempty"`
-	ModelUsed     string                 `protobuf:"bytes,2,opt,name=model_used,json=modelUsed,proto3" json:"model_used,omitempty"`
-	TokensIn      int32                  `protobuf:"varint,3,opt,name=tokens_in,json=tokensIn,proto3" json:"tokens_in,omitempty"`
-	TokensOut     int32                  `protobuf:"varint,4,opt,name=tokens_out,json=tokensOut,proto3" json:"tokens_out,omitempty"`
-	StopReason    string                 `protobuf:"bytes,5,opt,name=stop_reason,json=stopReason,proto3" json:"stop_reason,omitempty"`
-	SessionId     string                 `protobuf:"bytes,6,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	Model         string                 `protobuf:"bytes,2,opt,name=model,proto3" json:"model,omitempty"`
+	Tier          int32                  `protobuf:"varint,3,opt,name=tier,proto3" json:"tier,omitempty"`
+	Tokens        int64                  `protobuf:"varint,4,opt,name=tokens,proto3" json:"tokens,omitempty"`
+	SessionId     string                 `protobuf:"bytes,5,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -156,32 +129,25 @@ func (x *ChatResponse) GetMessage() string {
 	return ""
 }
 
-func (x *ChatResponse) GetModelUsed() string {
+func (x *ChatResponse) GetModel() string {
 	if x != nil {
-		return x.ModelUsed
+		return x.Model
 	}
 	return ""
 }
 
-func (x *ChatResponse) GetTokensIn() int32 {
+func (x *ChatResponse) GetTier() int32 {
 	if x != nil {
-		return x.TokensIn
+		return x.Tier
 	}
 	return 0
 }
 
-func (x *ChatResponse) GetTokensOut() int32 {
+func (x *ChatResponse) GetTokens() int64 {
 	if x != nil {
-		return x.TokensOut
+		return x.Tokens
 	}
 	return 0
-}
-
-func (x *ChatResponse) GetStopReason() string {
-	if x != nil {
-		return x.StopReason
-	}
-	return ""
 }
 
 func (x *ChatResponse) GetSessionId() string {
@@ -191,166 +157,6 @@ func (x *ChatResponse) GetSessionId() string {
 	return ""
 }
 
-// Streaming chat chunk
-type ChatChunk struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Content       string                 `protobuf:"bytes,1,opt,name=content,proto3" json:"content,omitempty"`
-	Done          bool                   `protobuf:"varint,2,opt,name=done,proto3" json:"done,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *ChatChunk) Reset() {
-	*x = ChatChunk{}
-	mi := &file_agent_proto_msgTypes[2]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *ChatChunk) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*ChatChunk) ProtoMessage() {}
-
-func (x *ChatChunk) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[2]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use ChatChunk.ProtoReflect.Descriptor instead.
-func (*ChatChunk) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{2}
-}
-
-func (x *ChatChunk) GetContent() string {
-	if x != nil {
-		return x.Content
-	}
-	return ""
-}
-
-func (x *ChatChunk) GetDone() bool {
-	if x != nil {
-		return x.Done
-	}
-	return false
-}
-
-// Tool execution request
-type ToolRequest struct {
-	state          protoimpl.MessageState `protogen:"open.v1"`
-	ToolName       string                 `protobuf:"bytes,1,opt,name=tool_name,json=toolName,proto3" json:"tool_name,omitempty"`
-	ParametersJson string                 `protobuf:"bytes,2,opt,name=parameters_json,json=parametersJson,proto3" json:"parameters_json,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
-}
-
-func (x *ToolRequest) Reset() {
-	*x = ToolRequest{}
-	mi := &file_agent_proto_msgTypes[3]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *ToolRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*ToolRequest) ProtoMessage() {}
-
-func (x *ToolRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[3]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use ToolRequest.ProtoReflect.Descriptor instead.
-func (*ToolRequest) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{3}
-}
-
-func (x *ToolRequest) GetToolName() string {
-	if x != nil {
-		return x.ToolName
-	}
-	return ""
-}
-
-func (x *ToolRequest) GetParametersJson() string {
-	if x != nil {
-		return x.ParametersJson
-	}
-	return ""
-}
-
-// Tool execution response
-type ToolResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Result        string                 `protobuf:"bytes,1,opt,name=result,proto3" json:"result,omitempty"`
-	Error         bool                   `protobuf:"varint,2,opt,name=error,proto3" json:"error,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *ToolResponse) Reset() {
-	*x = ToolResponse{}
-	mi := &file_agent_proto_msgTypes[4]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *ToolResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*ToolResponse) ProtoMessage() {}
-
-func (x *ToolResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[4]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use ToolResponse.ProtoReflect.Descriptor instead.
-func (*ToolResponse) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{4}
-}
-
-func (x *ToolResponse) GetResult() string {
-	if x != nil {
-		return x.Result
-	}
-	return ""
-}
-
-func (x *ToolResponse) GetError() bool {
-	if x != nil {
-		return x.Error
-	}
-	return false
-}
-
-// Status request (empty)
 type StatusRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -359,7 +165,7 @@ type StatusRequest struct {
 
 func (x *StatusRequest) Reset() {
 	*x = StatusRequest{}
-	mi := &file_agent_proto_msgTypes[5]
+	mi := &file_agent_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -371,7 +177,7 @@ func (x *StatusRequest) String() string {
 func (*StatusRequest) ProtoMessage() {}
 
 func (x *StatusRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[5]
+	mi := &file_agent_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -384,23 +190,22 @@ func (x *StatusRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StatusRequest.ProtoReflect.Descriptor instead.
 func (*StatusRequest) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{5}
+	return file_agent_proto_rawDescGZIP(), []int{2}
 }
 
-// Status response with system info
 type StatusResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Providers     []*ProviderInfo        `protobuf:"bytes,1,rep,name=providers,proto3" json:"providers,omitempty"`
-	ToolsCount    int32                  `protobuf:"varint,2,opt,name=tools_count,json=toolsCount,proto3" json:"tools_count,omitempty"`
-	UptimeSeconds int64                  `protobuf:"varint,3,opt,name=uptime_seconds,json=uptimeSeconds,proto3" json:"uptime_seconds,omitempty"`
-	Memory        *MemoryStats           `protobuf:"bytes,4,opt,name=memory,proto3" json:"memory,omitempty"`
+	Status        string                 `protobuf:"bytes,1,opt,name=status,proto3" json:"status,omitempty"`
+	Version       string                 `protobuf:"bytes,2,opt,name=version,proto3" json:"version,omitempty"`
+	Providers     int32                  `protobuf:"varint,3,opt,name=providers,proto3" json:"providers,omitempty"`
+	Tools         int32                  `protobuf:"varint,4,opt,name=tools,proto3" json:"tools,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *StatusResponse) Reset() {
 	*x = StatusResponse{}
-	mi := &file_agent_proto_msgTypes[6]
+	mi := &file_agent_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -412,7 +217,7 @@ func (x *StatusResponse) String() string {
 func (*StatusResponse) ProtoMessage() {}
 
 func (x *StatusResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[6]
+	mi := &file_agent_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -425,163 +230,33 @@ func (x *StatusResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StatusResponse.ProtoReflect.Descriptor instead.
 func (*StatusResponse) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{6}
+	return file_agent_proto_rawDescGZIP(), []int{3}
 }
 
-func (x *StatusResponse) GetProviders() []*ProviderInfo {
+func (x *StatusResponse) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *StatusResponse) GetVersion() string {
+	if x != nil {
+		return x.Version
+	}
+	return ""
+}
+
+func (x *StatusResponse) GetProviders() int32 {
 	if x != nil {
 		return x.Providers
 	}
-	return nil
-}
-
-func (x *StatusResponse) GetToolsCount() int32 {
-	if x != nil {
-		return x.ToolsCount
-	}
 	return 0
 }
 
-func (x *StatusResponse) GetUptimeSeconds() int64 {
+func (x *StatusResponse) GetTools() int32 {
 	if x != nil {
-		return x.UptimeSeconds
-	}
-	return 0
-}
-
-func (x *StatusResponse) GetMemory() *MemoryStats {
-	if x != nil {
-		return x.Memory
-	}
-	return nil
-}
-
-// Provider information
-type ProviderInfo struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	Model         string                 `protobuf:"bytes,2,opt,name=model,proto3" json:"model,omitempty"`
-	Available     bool                   `protobuf:"varint,3,opt,name=available,proto3" json:"available,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *ProviderInfo) Reset() {
-	*x = ProviderInfo{}
-	mi := &file_agent_proto_msgTypes[7]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *ProviderInfo) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*ProviderInfo) ProtoMessage() {}
-
-func (x *ProviderInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[7]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use ProviderInfo.ProtoReflect.Descriptor instead.
-func (*ProviderInfo) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{7}
-}
-
-func (x *ProviderInfo) GetName() string {
-	if x != nil {
-		return x.Name
-	}
-	return ""
-}
-
-func (x *ProviderInfo) GetModel() string {
-	if x != nil {
-		return x.Model
-	}
-	return ""
-}
-
-func (x *ProviderInfo) GetAvailable() bool {
-	if x != nil {
-		return x.Available
-	}
-	return false
-}
-
-// Memory statistics
-type MemoryStats struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	TotalAlloc    int64                  `protobuf:"varint,1,opt,name=total_alloc,json=totalAlloc,proto3" json:"total_alloc,omitempty"`
-	HeapAlloc     int64                  `protobuf:"varint,2,opt,name=heap_alloc,json=heapAlloc,proto3" json:"heap_alloc,omitempty"`
-	Sys           int64                  `protobuf:"varint,3,opt,name=sys,proto3" json:"sys,omitempty"`
-	GcCount       int32                  `protobuf:"varint,4,opt,name=gc_count,json=gcCount,proto3" json:"gc_count,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *MemoryStats) Reset() {
-	*x = MemoryStats{}
-	mi := &file_agent_proto_msgTypes[8]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *MemoryStats) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*MemoryStats) ProtoMessage() {}
-
-func (x *MemoryStats) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[8]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use MemoryStats.ProtoReflect.Descriptor instead.
-func (*MemoryStats) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{8}
-}
-
-func (x *MemoryStats) GetTotalAlloc() int64 {
-	if x != nil {
-		return x.TotalAlloc
-	}
-	return 0
-}
-
-func (x *MemoryStats) GetHeapAlloc() int64 {
-	if x != nil {
-		return x.HeapAlloc
-	}
-	return 0
-}
-
-func (x *MemoryStats) GetSys() int64 {
-	if x != nil {
-		return x.Sys
-	}
-	return 0
-}
-
-func (x *MemoryStats) GetGcCount() int32 {
-	if x != nil {
-		return x.GcCount
+		return x.Tools
 	}
 	return 0
 }
@@ -590,60 +265,30 @@ var File_agent_proto protoreflect.FileDescriptor
 
 const file_agent_proto_rawDesc = "" +
 	"\n" +
-	"\vagent.proto\x12\x05agent\"\xc4\x01\n" +
-	"\vChatRequest\x12\x1d\n" +
+	"\vagent.proto\x12\x05agent\"b\n" +
+	"\vChatRequest\x12\x18\n" +
+	"\amessage\x18\x01 \x01(\tR\amessage\x12\x1a\n" +
+	"\bprovider\x18\x02 \x01(\tR\bprovider\x12\x1d\n" +
 	"\n" +
-	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x18\n" +
-	"\amessage\x18\x02 \x01(\tR\amessage\x12\x12\n" +
-	"\x04mode\x18\x03 \x01(\tR\x04mode\x12'\n" +
-	"\x0fpreferred_model\x18\x04 \x01(\tR\x0epreferredModel\x12\x1d\n" +
-	"\n" +
-	"max_tokens\x18\x05 \x01(\x05R\tmaxTokens\x12 \n" +
-	"\vtemperature\x18\x06 \x01(\x01R\vtemperature\"\xc3\x01\n" +
+	"session_id\x18\x03 \x01(\tR\tsessionId\"\x89\x01\n" +
 	"\fChatResponse\x12\x18\n" +
-	"\amessage\x18\x01 \x01(\tR\amessage\x12\x1d\n" +
+	"\amessage\x18\x01 \x01(\tR\amessage\x12\x14\n" +
+	"\x05model\x18\x02 \x01(\tR\x05model\x12\x12\n" +
+	"\x04tier\x18\x03 \x01(\x05R\x04tier\x12\x16\n" +
+	"\x06tokens\x18\x04 \x01(\x03R\x06tokens\x12\x1d\n" +
 	"\n" +
-	"model_used\x18\x02 \x01(\tR\tmodelUsed\x12\x1b\n" +
-	"\ttokens_in\x18\x03 \x01(\x05R\btokensIn\x12\x1d\n" +
-	"\n" +
-	"tokens_out\x18\x04 \x01(\x05R\ttokensOut\x12\x1f\n" +
-	"\vstop_reason\x18\x05 \x01(\tR\n" +
-	"stopReason\x12\x1d\n" +
-	"\n" +
-	"session_id\x18\x06 \x01(\tR\tsessionId\"9\n" +
-	"\tChatChunk\x12\x18\n" +
-	"\acontent\x18\x01 \x01(\tR\acontent\x12\x12\n" +
-	"\x04done\x18\x02 \x01(\bR\x04done\"S\n" +
-	"\vToolRequest\x12\x1b\n" +
-	"\ttool_name\x18\x01 \x01(\tR\btoolName\x12'\n" +
-	"\x0fparameters_json\x18\x02 \x01(\tR\x0eparametersJson\"<\n" +
-	"\fToolResponse\x12\x16\n" +
-	"\x06result\x18\x01 \x01(\tR\x06result\x12\x14\n" +
-	"\x05error\x18\x02 \x01(\bR\x05error\"\x0f\n" +
-	"\rStatusRequest\"\xb7\x01\n" +
-	"\x0eStatusResponse\x121\n" +
-	"\tproviders\x18\x01 \x03(\v2\x13.agent.ProviderInfoR\tproviders\x12\x1f\n" +
-	"\vtools_count\x18\x02 \x01(\x05R\n" +
-	"toolsCount\x12%\n" +
-	"\x0euptime_seconds\x18\x03 \x01(\x03R\ruptimeSeconds\x12*\n" +
-	"\x06memory\x18\x04 \x01(\v2\x12.agent.MemoryStatsR\x06memory\"V\n" +
-	"\fProviderInfo\x12\x12\n" +
-	"\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n" +
-	"\x05model\x18\x02 \x01(\tR\x05model\x12\x1c\n" +
-	"\tavailable\x18\x03 \x01(\bR\tavailable\"z\n" +
-	"\vMemoryStats\x12\x1f\n" +
-	"\vtotal_alloc\x18\x01 \x01(\x03R\n" +
-	"totalAlloc\x12\x1d\n" +
-	"\n" +
-	"heap_alloc\x18\x02 \x01(\x03R\theapAlloc\x12\x10\n" +
-	"\x03sys\x18\x03 \x01(\x03R\x03sys\x12\x19\n" +
-	"\bgc_count\x18\x04 \x01(\x05R\agcCount2\xe7\x01\n" +
+	"session_id\x18\x05 \x01(\tR\tsessionId\"\x0f\n" +
+	"\rStatusRequest\"v\n" +
+	"\x0eStatusResponse\x12\x16\n" +
+	"\x06status\x18\x01 \x01(\tR\x06status\x12\x18\n" +
+	"\aversion\x18\x02 \x01(\tR\aversion\x12\x1c\n" +
+	"\tproviders\x18\x03 \x01(\x05R\tproviders\x12\x14\n" +
+	"\x05tools\x18\x04 \x01(\x05R\x05tools2\xaf\x01\n" +
 	"\fAgentService\x12/\n" +
-	"\x04Chat\x12\x12.agent.ChatRequest\x1a\x13.agent.ChatResponse\x124\n" +
+	"\x04Chat\x12\x12.agent.ChatRequest\x1a\x13.agent.ChatResponse\x127\n" +
 	"\n" +
-	"ChatStream\x12\x12.agent.ChatRequest\x1a\x10.agent.ChatChunk0\x01\x126\n" +
-	"\vExecuteTool\x12\x12.agent.ToolRequest\x1a\x13.agent.ToolResponse\x128\n" +
-	"\tGetStatus\x12\x14.agent.StatusRequest\x1a\x15.agent.StatusResponseB$Z\"github.com/nicholas/ai-agent/protob\x06proto3"
+	"StreamChat\x12\x12.agent.ChatRequest\x1a\x13.agent.ChatResponse0\x01\x125\n" +
+	"\x06Status\x12\x14.agent.StatusRequest\x1a\x15.agent.StatusResponseB)Z'github.com/nicholas/ai-agent/grpc/protob\x06proto3"
 
 var (
 	file_agent_proto_rawDescOnce sync.Once
@@ -657,34 +302,25 @@ func file_agent_proto_rawDescGZIP() []byte {
 	return file_agent_proto_rawDescData
 }
 
-var file_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
+var file_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
 var file_agent_proto_goTypes = []any{
 	(*ChatRequest)(nil),    // 0: agent.ChatRequest
 	(*ChatResponse)(nil),   // 1: agent.ChatResponse
-	(*ChatChunk)(nil),      // 2: agent.ChatChunk
-	(*ToolRequest)(nil),    // 3: agent.ToolRequest
-	(*ToolResponse)(nil),   // 4: agent.ToolResponse
-	(*StatusRequest)(nil),  // 5: agent.StatusRequest
-	(*StatusResponse)(nil), // 6: agent.StatusResponse
-	(*ProviderInfo)(nil),   // 7: agent.ProviderInfo
-	(*MemoryStats)(nil),    // 8: agent.MemoryStats
+	(*StatusRequest)(nil),  // 2: agent.StatusRequest
+	(*StatusResponse)(nil), // 3: agent.StatusResponse
 }
 var file_agent_proto_depIdxs = []int32{
-	7, // 0: agent.StatusResponse.providers:type_name -> agent.ProviderInfo
-	8, // 1: agent.StatusResponse.memory:type_name -> agent.MemoryStats
-	0, // 2: agent.AgentService.Chat:input_type -> agent.ChatRequest
-	0, // 3: agent.AgentService.ChatStream:input_type -> agent.ChatRequest
-	3, // 4: agent.AgentService.ExecuteTool:input_type -> agent.ToolRequest
-	5, // 5: agent.AgentService.GetStatus:input_type -> agent.StatusRequest
-	1, // 6: agent.AgentService.Chat:output_type -> agent.ChatResponse
-	2, // 7: agent.AgentService.ChatStream:output_type -> agent.ChatChunk
-	4, // 8: agent.AgentService.ExecuteTool:output_type -> agent.ToolResponse
-	6, // 9: agent.AgentService.GetStatus:output_type -> agent.StatusResponse
-	6, // [6:10] is the sub-list for method output_type
-	2, // [2:6] is the sub-list for method input_type
-	2, // [2:2] is the sub-list for extension type_name
-	2, // [2:2] is the sub-list for extension extendee
-	0, // [0:2] is the sub-list for field type_name
+	0, // 0: agent.AgentService.Chat:input_type -> agent.ChatRequest
+	0, // 1: agent.AgentService.StreamChat:input_type -> agent.ChatRequest
+	2, // 2: agent.AgentService.Status:input_type -> agent.StatusRequest
+	1, // 3: agent.AgentService.Chat:output_type -> agent.ChatResponse
+	1, // 4: agent.AgentService.StreamChat:output_type -> agent.ChatResponse
+	3, // 5: agent.AgentService.Status:output_type -> agent.StatusResponse
+	3, // [3:6] is the sub-list for method output_type
+	0, // [0:3] is the sub-list for method input_type
+	0, // [0:0] is the sub-list for extension type_name
+	0, // [0:0] is the sub-list for extension extendee
+	0, // [0:0] is the sub-list for field type_name
 }
 
 func init() { file_agent_proto_init() }
@@ -698,7 +334,7 @@ func file_agent_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_agent_proto_rawDesc), len(file_agent_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   9,
+			NumMessages:   4,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

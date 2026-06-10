@@ -115,13 +115,16 @@ Returns current time or date.
 ```
 
 ### Hash
-**Pattern**: `(?i)(hash|sha256|md5)\s+(.+)`
+**Pattern**: `(?i)^(?:hash\s+)?(sha256|md5)\s+(.+)$`
 
 Computes SHA256 or MD5 hash of input.
 
 ```go
-// Input: "sha256 hello world"
-// Output: "SHA256(hello world) = a948904f2f0f479b8f8197694b30184b0d2ed1c1cd2a1ec0fb85d299a192a447"
+// Input: "hash sha256 hello" or "sha256 hello"
+// Output: "SHA256(hello) = 2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+
+// Input: "hash md5 hello" or "md5 hello"
+// Output: "MD5(hello) = 5d41402abc4b2a76b9719d911017c592"
 ```
 
 ### Encode/Decode

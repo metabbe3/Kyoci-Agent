@@ -1,77 +1,32 @@
 syntax = "proto3";
-
 package agent;
+option go_package = "github.com/nicholas/ai-agent/grpc/proto";
 
-option go_package = "github.com/nicholas/ai-agent/proto";
-
-// Chat request with session tracking
-message ChatRequest {
-  string session_id = 1;
-  string message = 2;
-  string mode = 3;
-  string preferred_model = 4;
-  int32 max_tokens = 5;
-  double temperature = 6;
-}
-
-// Chat response with metadata
-message ChatResponse {
-  string message = 1;
-  string model_used = 2;
-  int32 tokens_in = 3;
-  int32 tokens_out = 4;
-  string stop_reason = 5;
-  string session_id = 6;
-}
-
-// Streaming chat chunk
-message ChatChunk {
-  string content = 1;
-  bool done = 2;
-}
-
-// Tool execution request
-message ToolRequest {
-  string tool_name = 1;
-  string parameters_json = 2;
-}
-
-// Tool execution response
-message ToolResponse {
-  string result = 1;
-  bool error = 2;
-}
-
-// Status request (empty)
-message StatusRequest {}
-
-// Status response with system info
-message StatusResponse {
-  repeated ProviderInfo providers = 1;
-  int32 tools_count = 2;
-  int64 uptime_seconds = 3;
-  MemoryStats memory = 4;
-}
-
-// Provider information
-message ProviderInfo {
-  string name = 1;
-  string model = 2;
-  bool available = 3;
-}
-
-// Memory statistics
-message MemoryStats {
-  int64 total_alloc = 1;
-  int64 heap_alloc = 2;
-  int64 sys = 3;
-  int32 gc_count = 4;
-}
-
-// Kyoci Agent gRPC Service
 service AgentService {
   rpc Chat(ChatRequest) returns (ChatResponse);
-  rpc ChatStream(ChatRequest) returns (stream ChatChunk);
-  rpc ExecuteTool(ToolRequest) returns (ToolResponse);
-  rpc GetStatus(StatusRequest) returns (StatusResponse);
+  rpc StreamChat(ChatRequest) returns (stream ChatResponse);
+  rpc Status(StatusRequest) returns (StatusResponse);
+}
+
+message ChatRequest {
+  string message = 1;
+  string provider = 2;
+  string session_id = 3;
+}
+
+message ChatResponse {
+  string message = 1;
+  string model = 2;
+  int32 tier = 3;
+  int64 tokens = 4;
+  string session_id = 5;
+}
+
+message StatusRequest {}
+
+message StatusResponse {
+  string status = 1;
+  string version = 2;
+  int32 providers = 3;
+  int32 tools = 4;
 }

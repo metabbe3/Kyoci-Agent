@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"regexp"
 
 	"github.com/nicholas/ai-agent/config"
 	"encoding/json"
@@ -13,6 +14,15 @@ import (
 	"strings"
 	"time"
 )
+
+// thinkTagRe matches Qwen3-style <think...</think\n> thinking blocks.
+var thinkTagRe = regexp.MustCompile(`(?s)<think\b[^>]*>.*?</think\s*>`)
+
+// stripThinkTags removes model-generated thinking blocks from content.
+func stripThinkTags(content string) string {
+	cleaned := thinkTagRe.ReplaceAllString(content, "")
+	return strings.TrimSpace(cleaned)
+}
 
 // OllamaProvider implements the Provider interface for Ollama
 type OllamaProvider struct {
@@ -117,7 +127,7 @@ func (p *OllamaProvider) Chat(ctx context.Context, messages []Message, tools []T
 	}
 
 	response := &Response{
-		Content:    ollamaResp.Message.Content,
+		Content:    stripThinkTags(ollamaResp.Message.Content),
 		ToolCalls:  p.parseToolCalls(ollamaResp.Message.ToolCalls),
 		StopReason: p.mapStopReason(ollamaResp.DoneReason),
 		Model:      ollamaResp.Model,

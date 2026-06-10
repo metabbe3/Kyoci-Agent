@@ -14,6 +14,7 @@ import (
 	grpc "github.com/nicholas/ai-agent/grpc"
 	"github.com/nicholas/ai-agent/llm"
 	"github.com/nicholas/ai-agent/proto"
+	"github.com/nicholas/ai-agent/skill"
 	"github.com/nicholas/ai-agent/tools"
 )
 
@@ -40,7 +41,7 @@ func main() {
 	ag := agent.NewV2(cfg, router, toolReg)
 
 	// Create gRPC server implementation
-	impl := grpc.NewServer(cfg, router, toolReg, ag)
+	impl := grpc.NewServer(cfg, router, toolReg, (*skill.Registry)(nil), ag)
 
 	// Start listening
 	addr := ":50051"

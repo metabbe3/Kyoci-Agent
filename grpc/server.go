@@ -2,43 +2,61 @@ package grpc
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"runtime"
 	"time"
 
 	"github.com/nicholas/ai-agent/agent"
 	"github.com/nicholas/ai-agent/config"
 	"github.com/nicholas/ai-agent/llm"
 	"github.com/nicholas/ai-agent/proto"
+	"github.com/nicholas/ai-agent/skill"
 	"github.com/nicholas/ai-agent/tools"
+	"google.golang.org/grpc"
 )
 
-var (
-	startTime = time.Now()
-)
+var startTime = time.Now()
 
 // Server implements the AgentService gRPC interface
 type Server struct {
 	proto.UnimplementedAgentServiceServer
-	agent  *agent.Agent
-	router *llm.Router
-	config *config.Config
-	tools  *tools.Registry
+	agent      *agent.Agent
+	router     *llm.Router
+	config     *config.Config
+	tools      *tools.Registry
+	skillReg   *skill.Registry
 }
 
 // NewServer creates a new gRPC server
-func NewServer(cfg *config.Config, router *llm.Router, toolReg *tools.Registry, ag *agent.Agent) *Server {
+func NewServer(cfg *config.Config, router *llm.Router, toolReg *tools.Registry, skillReg *skill.Registry, ag *agent.Agent) *Server {
 	return &Server{
-		agent:  ag,
-		router: router,
-		config: cfg,
-		tools:  toolReg,
+		agent:    ag,
+		router:   router,
+		config:   cfg,
+		tools:    toolReg,
+		skillReg: skillReg,
 	}
 }
 
 // Chat handles a single chat request and returns a complete response
 func (s *Server) Chat(ctx context.Context, req *proto.ChatRequest) (*proto.ChatResponse, error) {
+	// Try skill registry first (Tier 0)
+	if output, matched, _ := s.skillReg.Execute(ctx, req.Message); matched {
+		defaultProvider, ok := s.router.GetProvider(s.config.LLM.DefaultProvider)
+		modelName := s.config.LLM.DefaultProvider
+		if ok {
+			modelName = defaultProvider.Name()
+		}
+
+		return &proto.ChatResponse{
+			Message:    output,
+			Model:      modelName,
+			Tier:       0,
+			Tokens:     0,
+			SessionId:  req.SessionId,
+		}, nil
+	}
+
+	// Fall back to agent (Tier 1)
 	response, err := s.agent.Run(ctx, req.Message)
 	if err != nil {
 		return nil, fmt.Errorf("chat failed: %w", err)
@@ -46,96 +64,68 @@ func (s *Server) Chat(ctx context.Context, req *proto.ChatRequest) (*proto.ChatR
 
 	// Get default provider for model info
 	defaultProvider, ok := s.router.GetProvider(s.config.LLM.DefaultProvider)
-	modelUsed := s.config.LLM.DefaultProvider
+	modelName := s.config.LLM.DefaultProvider
 	if ok {
-		modelUsed = defaultProvider.Name()
+		modelName = defaultProvider.Name()
 	}
 
 	return &proto.ChatResponse{
 		Message:    response,
+		Model:      modelName,
+		Tier:       1,
+		Tokens:     0, // TODO: Extract from agent response
 		SessionId:  req.SessionId,
-		ModelUsed:  modelUsed,
-		TokensIn:   0, // TODO: Extract from agent response
-		TokensOut:  0,
-		StopReason: "stop",
 	}, nil
 }
 
-// ChatStream handles a chat request and returns a streaming response
-func (s *Server) ChatStream(req *proto.ChatRequest, stream proto.AgentService_ChatStreamServer) error {
+// StreamChat handles a chat request and returns a streaming response
+func (s *Server) StreamChat(req *proto.ChatRequest, stream grpc.ServerStreamingServer[proto.ChatResponse]) error {
 	ch, err := s.agent.Stream(context.Background(), req.Message)
 	if err != nil {
 		return fmt.Errorf("stream failed: %w", err)
 	}
 
+	defaultProvider, ok := s.router.GetProvider(s.config.LLM.DefaultProvider)
+	modelName := s.config.LLM.DefaultProvider
+	if ok {
+		modelName = defaultProvider.Name()
+	}
+
 	for chunk := range ch {
-		if err := stream.Send(&proto.ChatChunk{
-			Content: chunk,
-			Done:    false,
+		if err := stream.Send(&proto.ChatResponse{
+			Message:    chunk,
+			Model:      modelName,
+			Tier:       1,
+			Tokens:     0,
+			SessionId:  req.SessionId,
 		}); err != nil {
 			return fmt.Errorf("send chunk failed: %w", err)
 		}
 	}
 
-	// Send final done marker
-	if err := stream.Send(&proto.ChatChunk{
-		Content: "",
-		Done:    true,
-	}); err != nil {
-		return fmt.Errorf("send done marker failed: %w", err)
-	}
-
 	return nil
 }
 
-// ExecuteTool executes a tool directly without AI processing
-func (s *Server) ExecuteTool(ctx context.Context, req *proto.ToolRequest) (*proto.ToolResponse, error) {
-	result, err := s.tools.ExecuteTool(ctx, req.ToolName, json.RawMessage(req.ParametersJson))
-	if err != nil {
-		return &proto.ToolResponse{
-			Result: result,
-			Error:  true,
-		}, nil
-	}
+// Status returns system status information
+func (s *Server) Status(ctx context.Context, req *proto.StatusRequest) (*proto.StatusResponse, error) {
+	providers := len(s.router.ListProviders())
+	tools := len(s.tools.List())
 
-	return &proto.ToolResponse{
-		Result: result,
-		Error:  false,
+	return &proto.StatusResponse{
+		Status:   "running",
+		Version:  "1.0.0",
+		Providers: int32(providers),
+		Tools:     int32(tools),
 	}, nil
 }
 
-// GetStatus returns system status information
-func (s *Server) GetStatus(ctx context.Context, req *proto.StatusRequest) (*proto.StatusResponse, error) {
-	var m runtime.MemStats
-	runtime.ReadMemStats(&m)
+// Shutdown gracefully stops the gRPC server
+func (s *Server) Shutdown() error {
+	// Add any cleanup logic here
+	return nil
+}
 
-	// Build provider info list from config
-	providers := make([]*proto.ProviderInfo, 0)
-	for name, providerCfg := range s.config.LLM.Providers {
-		if provider, ok := s.router.GetProvider(name); ok {
-			providers = append(providers, &proto.ProviderInfo{
-				Name:      provider.Name(),
-				Model:     providerCfg.Model,
-				Available: ok,
-			})
-		}
-	}
-
-	// Get tool count
-	toolList := s.tools.List()
-	toolsCount := int32(len(toolList))
-
-	uptime := int64(time.Since(startTime).Seconds())
-
-	return &proto.StatusResponse{
-		Providers:     providers,
-		ToolsCount:    toolsCount,
-		UptimeSeconds: uptime,
-		Memory: &proto.MemoryStats{
-			TotalAlloc: int64(m.TotalAlloc),
-			HeapAlloc:  int64(m.HeapAlloc),
-			Sys:        int64(m.Sys),
-			GcCount:    int32(m.NumGC),
-		},
-	}, nil
+// Name returns the server name for graceful shutdown
+func (s *Server) Name() string {
+	return "gRPCServer"
 }

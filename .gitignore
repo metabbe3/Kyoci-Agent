@@ -48,3 +48,6 @@ data/wal/
 
 # Memory backup
 *.bak
+bin/
+bin/
+api/knowledge.json

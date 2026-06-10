@@ -20,13 +20,18 @@ import (
 	"github.com/nicholas/ai-agent/config"
 	"github.com/nicholas/ai-agent/engine"
 	"github.com/nicholas/ai-agent/gateway"
+	agentgrpc "github.com/nicholas/ai-agent/grpc"
 	"github.com/nicholas/ai-agent/llm"
 	"github.com/nicholas/ai-agent/pool"
+	"github.com/nicholas/ai-agent/proto"
 	"github.com/nicholas/ai-agent/security"
 	"github.com/nicholas/ai-agent/selfskill"
 	"github.com/nicholas/ai-agent/skill"
 	"github.com/nicholas/ai-agent/thinking"
 	"github.com/nicholas/ai-agent/tools"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/reflection"
+	"net"
 )
 
 // Shutdownable defines components that can be gracefully shut down
@@ -183,6 +188,7 @@ func main() {
 	for _, t := range []tools.Tool{
 		tools.NewWebSearchTool(),
 		tools.NewCalculatorTool(),
+		tools.NewWeatherTool(),
 		tools.NewFileHandlerTool(cfg.Tools.WorkDir),
 		tools.NewTerminalTool(),
 		tools.NewBrowserTool(),
@@ -266,19 +272,35 @@ func main() {
 		return
 	}
 
-	// ── gRPC mode ──
-	if *grpcMode {
-		slog.Info("Starting gRPC server")
-		select {}
+	// ── gRPC + HTTP dual mode ──
+	// gRPC always starts alongside HTTP if --grpc is set, or can run standalone
+	startGRPC := *grpcMode || *serverMode
+	startHTTP := *serverMode
+
+	if startGRPC {
+		grpcImpl := agentgrpc.NewServer(cfg, router, toolReg, skillReg, ag)
+		listener, err := net.Listen("tcp", ":50051")
+		if err != nil {
+			slog.Error("Failed to listen on gRPC port 50051", "error", err)
+		} else {
+			grpcSrv := grpc.NewServer()
+			proto.RegisterAgentServiceServer(grpcSrv, grpcImpl)
+			reflection.Register(grpcSrv)
+			go func() {
+				slog.Info("gRPC server listening", "port", 50051)
+				if err := grpcSrv.Serve(listener); err != nil {
+					slog.Error("gRPC server error", "error", err)
+				}
+			}()
+			defer grpcSrv.GracefulStop()
+		}
 	}
 
-	// ── HTTP API mode ──
-	if *serverMode {
+	if startHTTP {
 		srv := api.NewServer(cfg, ag, router, toolReg)
 		srv.SetSkillRegistry(skillReg)
 		slog.Info("Starting API server", "host", cfg.Server.Host, "port", cfg.Server.Port)
 
-		// Start server in a goroutine
 		serverErr := make(chan error, 1)
 		go func() {
 			if err := srv.Start(); err != nil {
@@ -286,11 +308,9 @@ func main() {
 			}
 		}()
 
-		// Wait for either signal or server error
 		select {
 		case <-ctx.Done():
-			// Graceful shutdown
-			slog.Info("Shutting down HTTP server")
+			slog.Info("Shutting down servers")
 			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer shutdownCancel()
 			if err := srv.Shutdown(shutdownCtx); err != nil {
@@ -298,7 +318,7 @@ func main() {
 			}
 			return
 		case err := <-serverErr:
-			slog.Error("Server error", "error", err)
+			slog.Error("HTTP server error", "error", err)
 			os.Exit(1)
 		}
 	}

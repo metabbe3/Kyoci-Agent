@@ -19,22 +19,18 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	AgentService_Chat_FullMethodName        = "/agent.AgentService/Chat"
-	AgentService_ChatStream_FullMethodName  = "/agent.AgentService/ChatStream"
-	AgentService_ExecuteTool_FullMethodName = "/agent.AgentService/ExecuteTool"
-	AgentService_GetStatus_FullMethodName   = "/agent.AgentService/GetStatus"
+	AgentService_Chat_FullMethodName       = "/agent.AgentService/Chat"
+	AgentService_StreamChat_FullMethodName = "/agent.AgentService/StreamChat"
+	AgentService_Status_FullMethodName     = "/agent.AgentService/Status"
 )
 
 // AgentServiceClient is the client API for AgentService service.
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
-//
-// AI Agent gRPC Service
 type AgentServiceClient interface {
 	Chat(ctx context.Context, in *ChatRequest, opts ...grpc.CallOption) (*ChatResponse, error)
-	ChatStream(ctx context.Context, in *ChatRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ChatChunk], error)
-	ExecuteTool(ctx context.Context, in *ToolRequest, opts ...grpc.CallOption) (*ToolResponse, error)
-	GetStatus(ctx context.Context, in *StatusRequest, opts ...grpc.CallOption) (*StatusResponse, error)
+	StreamChat(ctx context.Context, in *ChatRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ChatResponse], error)
+	Status(ctx context.Context, in *StatusRequest, opts ...grpc.CallOption) (*StatusResponse, error)
 }
 
 type agentServiceClient struct {
@@ -55,13 +51,13 @@ func (c *agentServiceClient) Chat(ctx context.Context, in *ChatRequest, opts ...
 	return out, nil
 }
 
-func (c *agentServiceClient) ChatStream(ctx context.Context, in *ChatRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ChatChunk], error) {
+func (c *agentServiceClient) StreamChat(ctx context.Context, in *ChatRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ChatResponse], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &AgentService_ServiceDesc.Streams[0], AgentService_ChatStream_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &AgentService_ServiceDesc.Streams[0], AgentService_StreamChat_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
-	x := &grpc.GenericClientStream[ChatRequest, ChatChunk]{ClientStream: stream}
+	x := &grpc.GenericClientStream[ChatRequest, ChatResponse]{ClientStream: stream}
 	if err := x.ClientStream.SendMsg(in); err != nil {
 		return nil, err
 	}
@@ -72,22 +68,12 @@ func (c *agentServiceClient) ChatStream(ctx context.Context, in *ChatRequest, op
 }
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type AgentService_ChatStreamClient = grpc.ServerStreamingClient[ChatChunk]
+type AgentService_StreamChatClient = grpc.ServerStreamingClient[ChatResponse]
 
-func (c *agentServiceClient) ExecuteTool(ctx context.Context, in *ToolRequest, opts ...grpc.CallOption) (*ToolResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(ToolResponse)
-	err := c.cc.Invoke(ctx, AgentService_ExecuteTool_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *agentServiceClient) GetStatus(ctx context.Context, in *StatusRequest, opts ...grpc.CallOption) (*StatusResponse, error) {
+func (c *agentServiceClient) Status(ctx context.Context, in *StatusRequest, opts ...grpc.CallOption) (*StatusResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(StatusResponse)
-	err := c.cc.Invoke(ctx, AgentService_GetStatus_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, AgentService_Status_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -97,13 +83,10 @@ func (c *agentServiceClient) GetStatus(ctx context.Context, in *StatusRequest, o
 // AgentServiceServer is the server API for AgentService service.
 // All implementations must embed UnimplementedAgentServiceServer
 // for forward compatibility.
-//
-// AI Agent gRPC Service
 type AgentServiceServer interface {
 	Chat(context.Context, *ChatRequest) (*ChatResponse, error)
-	ChatStream(*ChatRequest, grpc.ServerStreamingServer[ChatChunk]) error
-	ExecuteTool(context.Context, *ToolRequest) (*ToolResponse, error)
-	GetStatus(context.Context, *StatusRequest) (*StatusResponse, error)
+	StreamChat(*ChatRequest, grpc.ServerStreamingServer[ChatResponse]) error
+	Status(context.Context, *StatusRequest) (*StatusResponse, error)
 	mustEmbedUnimplementedAgentServiceServer()
 }
 
@@ -117,14 +100,11 @@ type UnimplementedAgentServiceServer struct{}
 func (UnimplementedAgentServiceServer) Chat(context.Context, *ChatRequest) (*ChatResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Chat not implemented")
 }
-func (UnimplementedAgentServiceServer) ChatStream(*ChatRequest, grpc.ServerStreamingServer[ChatChunk]) error {
-	return status.Error(codes.Unimplemented, "method ChatStream not implemented")
+func (UnimplementedAgentServiceServer) StreamChat(*ChatRequest, grpc.ServerStreamingServer[ChatResponse]) error {
+	return status.Error(codes.Unimplemented, "method StreamChat not implemented")
 }
-func (UnimplementedAgentServiceServer) ExecuteTool(context.Context, *ToolRequest) (*ToolResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method ExecuteTool not implemented")
-}
-func (UnimplementedAgentServiceServer) GetStatus(context.Context, *StatusRequest) (*StatusResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method GetStatus not implemented")
+func (UnimplementedAgentServiceServer) Status(context.Context, *StatusRequest) (*StatusResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Status not implemented")
 }
 func (UnimplementedAgentServiceServer) mustEmbedUnimplementedAgentServiceServer() {}
 func (UnimplementedAgentServiceServer) testEmbeddedByValue()                      {}
@@ -165,49 +145,31 @@ func _AgentService_Chat_Handler(srv interface{}, ctx context.Context, dec func(i
 	return interceptor(ctx, in, info, handler)
 }
 
-func _AgentService_ChatStream_Handler(srv interface{}, stream grpc.ServerStream) error {
+func _AgentService_StreamChat_Handler(srv interface{}, stream grpc.ServerStream) error {
 	m := new(ChatRequest)
 	if err := stream.RecvMsg(m); err != nil {
 		return err
 	}
-	return srv.(AgentServiceServer).ChatStream(m, &grpc.GenericServerStream[ChatRequest, ChatChunk]{ServerStream: stream})
+	return srv.(AgentServiceServer).StreamChat(m, &grpc.GenericServerStream[ChatRequest, ChatResponse]{ServerStream: stream})
 }
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type AgentService_ChatStreamServer = grpc.ServerStreamingServer[ChatChunk]
+type AgentService_StreamChatServer = grpc.ServerStreamingServer[ChatResponse]
 
-func _AgentService_ExecuteTool_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(ToolRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(AgentServiceServer).ExecuteTool(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: AgentService_ExecuteTool_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(AgentServiceServer).ExecuteTool(ctx, req.(*ToolRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _AgentService_GetStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _AgentService_Status_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(StatusRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(AgentServiceServer).GetStatus(ctx, in)
+		return srv.(AgentServiceServer).Status(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: AgentService_GetStatus_FullMethodName,
+		FullMethod: AgentService_Status_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(AgentServiceServer).GetStatus(ctx, req.(*StatusRequest))
+		return srv.(AgentServiceServer).Status(ctx, req.(*StatusRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -224,18 +186,14 @@ var AgentService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _AgentService_Chat_Handler,
 		},
 		{
-			MethodName: "ExecuteTool",
-			Handler:    _AgentService_ExecuteTool_Handler,
-		},
-		{
-			MethodName: "GetStatus",
-			Handler:    _AgentService_GetStatus_Handler,
+			MethodName: "Status",
+			Handler:    _AgentService_Status_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{
 		{
-			StreamName:    "ChatStream",
-			Handler:       _AgentService_ChatStream_Handler,
+			StreamName:    "StreamChat",
+			Handler:       _AgentService_StreamChat_Handler,
 			ServerStreams: true,
 		},
 	},

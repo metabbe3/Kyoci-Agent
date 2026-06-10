@@ -9,6 +9,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -52,9 +54,9 @@ func handleTime(ctx context.Context, input string) (string, error) {
 }
 
 // Hash handler: computes SHA256 or MD5 hash.
-// Pattern: (?i)(hash|sha256|md5)\s+(.+)
+// Pattern: (?i)^(?:hash\s+)?(sha256|md5)\s+(.+)$
 func handleHash(ctx context.Context, input string) (string, error) {
-	re := regexp.MustCompile(`(?i)(hash|sha256|md5)\s+(.+)`)
+	re := regexp.MustCompile(`(?i)^(?:hash\s+)?(sha256|md5)\s+(.+)$`)
 	matches := re.FindStringSubmatch(input)
 	if len(matches) < 3 {
 		return "", fmt.Errorf("no hash algorithm or input found")
@@ -64,7 +66,7 @@ func handleHash(ctx context.Context, input string) (string, error) {
 	data := strings.TrimSpace(matches[2])
 
 	switch algorithm {
-	case "sha256", "hash":
+	case "sha256":
 		h := sha256.Sum256([]byte(data))
 		return fmt.Sprintf("SHA256(%s) = %s", data, hex.EncodeToString(h[:])), nil
 	case "md5":
@@ -198,6 +200,150 @@ func handleUnitConvert(ctx context.Context, input string) (string, error) {
 	}
 }
 
+// handleURLEncode URL-encodes a string.
+func handleURLEncode(ctx context.Context, input string) (string, error) {
+	re := regexp.MustCompile(`(?i)(url\s+encode|encode\s+url)\s+(.+)`)
+	matches := re.FindStringSubmatch(input)
+	if len(matches) < 3 {
+		return "", fmt.Errorf("invalid url encode input: %s", input)
+	}
+	data := strings.TrimSpace(matches[2])
+	encoded := url.QueryEscape(data)
+	return fmt.Sprintf("URLEncode(%s) = %s", data, encoded), nil
+}
+
+// handleWeather gets weather for a city using Open-Meteo API.
+func handleWeather(ctx context.Context, input string) (string, error) {
+	re := regexp.MustCompile(`(?i)(weather|cuaca)\s+(.+)`)
+	matches := re.FindStringSubmatch(input)
+	if len(matches) < 3 {
+		return "", fmt.Errorf("no city found")
+	}
+
+	city := strings.TrimSpace(matches[2])
+	if city == "" {
+		return "", fmt.Errorf("city name is required")
+	}
+
+	// Geocode the city
+	geoURL := fmt.Sprintf("https://geocoding-api.open-meteo.com/v1/search?name=%s&count=1&language=en&format=json",
+		url.QueryEscape(city))
+
+	req, err := http.NewRequestWithContext(ctx, "GET", geoURL, nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to create geocoding request: %w", err)
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; AIAgent/1.0)")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("geocoding request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return "", fmt.Errorf("geocoding API returned status %d", resp.StatusCode)
+	}
+
+	var geoData struct {
+		Results []struct {
+			Name      string  `json:"name"`
+			Latitude  float64 `json:"latitude"`
+			Longitude float64 `json:"longitude"`
+			Country   string  `json:"country"`
+		} `json:"results"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&geoData); err != nil {
+		return "", fmt.Errorf("failed to parse geocoding response: %w", err)
+	}
+
+	if len(geoData.Results) == 0 {
+		return "", fmt.Errorf("city not found: %s", city)
+	}
+
+	location := geoData.Results[0]
+
+	// Get weather data
+	weatherURL := fmt.Sprintf("https://api.open-meteo.com/v1/forecast?latitude=%.6f&longitude=%.6f&current=temperature_2m,relative_humidity_2m,wind_speed_10m,weather_code&timezone=auto",
+		location.Latitude, location.Longitude)
+
+	req, err = http.NewRequestWithContext(ctx, "GET", weatherURL, nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to create weather request: %w", err)
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; AIAgent/1.0)")
+
+	resp, err = client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("weather request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return "", fmt.Errorf("weather API returned status %d", resp.StatusCode)
+	}
+
+	var weatherData struct {
+		Current struct {
+			Temperature2M      float64 `json:"temperature_2m"`
+			RelativeHumidity2M int     `json:"relative_humidity_2m"`
+			WindSpeed10M       float64 `json:"wind_speed_10m"`
+			WeatherCode        int     `json:"weather_code"`
+		} `json:"current"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&weatherData); err != nil {
+		return "", fmt.Errorf("failed to parse weather response: %w", err)
+	}
+
+	description := getSkillWeatherDescription(weatherData.Current.WeatherCode)
+
+	output := fmt.Sprintf("Weather in %s, %s:\n", location.Name, location.Country)
+	output += fmt.Sprintf("  Temperature: %.1f°C\n", weatherData.Current.Temperature2M)
+	output += fmt.Sprintf("  Humidity: %d%%\n", weatherData.Current.RelativeHumidity2M)
+	output += fmt.Sprintf("  Wind Speed: %.1f km/h\n", weatherData.Current.WindSpeed10M)
+	output += fmt.Sprintf("  Condition: %s", description)
+
+	return output, nil
+}
+
+// getSkillWeatherDescription converts WMO weather codes to human-readable descriptions.
+func getSkillWeatherDescription(code int) string {
+	descriptions := map[int]string{
+		0:  "Clear sky",
+		1:  "Mainly clear",
+		2:  "Partly cloudy",
+		3:  "Overcast",
+		45: "Foggy",
+		48: "Depositing rime fog",
+		51: "Light drizzle",
+		53: "Moderate drizzle",
+		55: "Dense drizzle",
+		61: "Slight rain",
+		63: "Moderate rain",
+		65: "Heavy rain",
+		66: "Light freezing rain",
+		67: "Heavy freezing rain",
+		71: "Slight snow fall",
+		73: "Moderate snow fall",
+		75: "Heavy snow fall",
+		77: "Snow grains",
+		80: "Slight rain showers",
+		81: "Moderate rain showers",
+		82: "Violent rain showers",
+		85: "Slight snow showers",
+		86: "Heavy snow showers",
+		95: "Thunderstorm",
+		96: "Thunderstorm with slight hail",
+		99: "Thunderstorm with heavy hail",
+	}
+
+	if desc, ok := descriptions[code]; ok {
+		return desc
+	}
+	return "Unknown condition"
+}
+
 // RegisterBuiltinSkills registers all built-in zero-AI skills to a registry.
 func RegisterBuiltinSkills(r *Registry) error {
 	if err := r.Register("math", `(?i)(hitung|calculate|compute|berapa)\s+([\d+\-*/(). ]+)`, handleMath, "Evaluate arithmetic expressions"); err != nil {
@@ -206,7 +352,7 @@ func RegisterBuiltinSkills(r *Registry) error {
 	if err := r.Register("time", `(?i)(jam berapa|what time|current time|tanggal|what date)`, handleTime, "Get current time or date"); err != nil {
 		return err
 	}
-	if err := r.Register("hash", `(?i)(hash|sha256|md5)\s+(.+)`, handleHash, "Compute SHA256 or MD5 hash"); err != nil {
+	if err := r.Register("hash", `(?i)^(?:hash\s+)?(sha256|md5)\s+(.+)$`, handleHash, "Compute SHA256 or MD5 hash"); err != nil {
 		return err
 	}
 	if err := r.Register("encode", `(?i)(base64 (encode|decode))\s+(.+)`, handleEncode, "Base64 encode/decode"); err != nil {
@@ -222,6 +368,12 @@ func RegisterBuiltinSkills(r *Registry) error {
 		return err
 	}
 	if err := r.Register("unit_convert", `(?i)(convert|konversi)\s+(\d+)\s+(celsius|fahrenheit|km|mi|kg|lb)`, handleUnitConvert, "Convert between units"); err != nil {
+		return err
+	}
+	if err := r.Register("url_encode", `(?i)(url\s+encode|encode\s+url)\s+(.+)`, handleURLEncode, "URL encode a string"); err != nil {
+		return err
+	}
+	if err := r.Register("weather", `(?i)(weather|cuaca)\s+(.+)`, handleWeather, "Get weather for a city"); err != nil {
 		return err
 	}
 
