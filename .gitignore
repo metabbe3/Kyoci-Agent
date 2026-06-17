@@ -61,6 +61,25 @@ benchmarks/last_report_level_3.txt
 benchmarks/last_run_level_1.log
 benchmarks/last_run_level_2.log
 benchmarks/last_run_level_3.log
+benchmarks/last_response_level_4.json
+benchmarks/last_report_level_4.txt
+
+# L3 bench transient state
+/tmp/kyoci-l3-bench.db
+
+# =============================================================================
+# Local dev / scratch logs at repo root
+# =============================================================================
+backend.log
+frontend.log
+l3_benchmark_output.log
+l3_benchmark_pass_scenarios.txt
+
+# Backups of config we don't want tracked
+*.backup
+
+# Playwright MCP scratch dir
+.playwright-mcp/
 
 # L3 bench transient state
 /tmp/kyoci-l3-bench.db

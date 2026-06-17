@@ -87,6 +87,11 @@ CODE QUALITY:
 - Mobile-first responsive design.
 - TypeScript types on everything (no implicit any).
 
+DELEGATION:
+- If a subtask needs backend logic, infra, testing, or planning: delegate via the delegation tool (action="spawn", goal="<one focused sentence>") to Developer, SRE, QA, or PM respectively.
+- Use action="wait_all" before reporting Done so sub-agents finish first.
+- Max 3 concurrent sub-agents. Each gets a 180s budget — give it a single, complete goal.
+
 Keep responses SHORT. Execute. Verify. Report what you built.`,
 		Tools: []string{
 			"terminal",
@@ -97,6 +102,9 @@ Keep responses SHORT. Execute. Verify. Report what you built.`,
 			"http_client",
 			"memory_recall",
 			"remember",
+			"uploaded_file",
+			"excel",
+			"delegation",
 		},
 		PreferredProvider: "",
 		MaxIterations:     15,

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -15,19 +16,26 @@ import (
 
 	kyoci "github.com/metabbe3/Kyoci-Agent/pkg"
 	"github.com/metabbe3/Kyoci-Agent/internal/config"
+	"github.com/metabbe3/Kyoci-Agent/internal/dashboard"
 	"github.com/metabbe3/Kyoci-Agent/internal/gateway"
+	"github.com/metabbe3/Kyoci-Agent/internal/hitl"
 	"github.com/metabbe3/Kyoci-Agent/internal/orchestrator"
 )
 
 // Server wraps the orchestrator with HTTP handlers.
 type Server struct {
 	orch *orchestrator.Orchestrator
+	dash *dashboard.Server
 	addr string
 }
 
 // NewServer creates a new HTTP server wrapping the orchestrator.
-func NewServer(orch *orchestrator.Orchestrator, addr string) *Server {
-	return &Server{orch: orch, addr: addr}
+func NewServer(orch *orchestrator.Orchestrator, cfg *config.Config, cfgPath, addr string) *Server {
+	return &Server{
+		orch: orch,
+		dash: dashboard.NewServer(orch, cfg, cfgPath),
+		addr: addr,
+	}
 }
 
 // TaskRequest is the JSON request body for task execution.
@@ -214,6 +222,16 @@ func (s *Server) Routes() *http.ServeMux {
 	mux.HandleFunc("/api/v1/execute", s.handleExecute)
 	mux.HandleFunc("/api/v1/status", s.handleStatus)
 	mux.HandleFunc("/api/v1/webhook", s.handleWebhook)
+
+	// Dashboard API + embedded SPA. The SPA fallback is registered LAST so
+	// the more specific /api/* routes win on Go's longest-prefix mux.
+	if s.dash != nil {
+		for path, handler := range s.dash.Routes() {
+			mux.HandleFunc(path, handler)
+		}
+	}
+	mux.HandleFunc("/", dashboard.SPAHandler())
+
 	return mux
 }
 
@@ -322,8 +340,44 @@ func main() {
 	}
 	orch.Start()
 
+	// Start the HITL gRPC server if enabled. The orchestrator's retry loop
+	// uses the Hub directly (in-process); the gRPC server is the network
+	// bridge for operator clients (cmd/hitlctl).
+	var hitlHub *hitl.Hub
+	var hitlServer *hitl.Server
+	if cfg.HITL.Enabled {
+		timeout := time.Duration(cfg.HITL.RequestTimeout) * time.Second
+		if timeout <= 0 {
+			timeout = 5 * time.Minute
+		}
+		hitlHub = hitl.NewHub(timeout, slog.Default())
+		hitlServer = hitl.NewServer(hitlHub, slog.Default())
+
+		hitlAddr := fmt.Sprintf(":%d", cfg.HITL.Port)
+		ln, err := net.Listen("tcp", hitlAddr)
+		if err != nil {
+			slog.Error("failed to bind HITL gRPC listener", "addr", hitlAddr, "error", err)
+			os.Exit(1)
+		}
+		go func() {
+			if err := hitlServer.Serve(ln); err != nil {
+				slog.Error("HITL gRPC server stopped", "error", err)
+			}
+		}()
+		slog.Info("HITL gRPC server listening", "addr", hitlAddr, "request_timeout", timeout)
+
+		// Wire the HITL hook into the orchestrator. MaxRetries comes from the
+		// orchestration config so it travels with the rest of the retry budget.
+		orch.SetHITL(&orchestrator.HITLConfig{
+			MaxRetries: cfg.Agent.Orchestration.MaxRetries,
+			Hook:       hitlHub,
+		})
+	} else {
+		slog.Info("HITL gRPC server disabled (set hitl.enabled=true to enable)")
+	}
+
 	// Create HTTP server
-	server := NewServer(orch, addr)
+	server := NewServer(orch, cfg, *configPath, addr)
 	mux := server.Routes()
 	httpServer := &http.Server{
 		Addr:         addr,
@@ -394,6 +448,12 @@ func main() {
 		slog.Error("orchestrator shutdown error", "error", err)
 	}
 
+	// Graceful HITL gRPC shutdown
+	if hitlServer != nil {
+		slog.Info("stopping HITL gRPC server")
+		hitlServer.GracefulStop()
+	}
+
 	slog.Info("Kyoci Agent v5 stopped")
 }
 
@@ -423,6 +483,13 @@ func printBanner(addr string, cfg *config.Config) {
 	fmt.Println("  ╚═══════════════════════════════════════╝")
 	fmt.Println()
 	fmt.Printf("  HTTP API:  http://localhost%s\n", addr)
+
+	if cfg.HITL.Enabled {
+		fmt.Printf("  HITL gRPC: localhost:%d  (max_retries=%d)\n",
+			cfg.HITL.Port, cfg.Agent.Orchestration.MaxRetries)
+	} else {
+		fmt.Println("  HITL:      ❌ Disabled")
+	}
 
 	if cfg.Telegram.Enabled {
 		fmt.Println("  Telegram:  ✅ Connected")

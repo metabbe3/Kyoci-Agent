@@ -27,6 +27,10 @@ const (
 	RolePM
 	// RoleFrontend represents a frontend developer role focused on UI/UX, HTML/CSS/JS/TS
 	RoleFrontend
+	// RoleGeneralist represents a generalist agent for research, explanation,
+	// and multi-domain tasks that don't clearly fit a specialist. It is the
+	// default fallback for the classifier.
+	RoleGeneralist
 	// RoleCustom represents a custom role defined by the user
 	RoleCustom
 )
@@ -44,6 +48,8 @@ func (rt RoleType) String() string {
 		return "pm"
 	case RoleFrontend:
 		return "frontend"
+	case RoleGeneralist:
+		return "generalist"
 	case RoleCustom:
 		return "custom"
 	default:

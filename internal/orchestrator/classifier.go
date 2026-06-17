@@ -6,92 +6,154 @@ import (
 	kyoci "github.com/metabbe3/Kyoci-Agent/pkg"
 )
 
-// ClassifyRole auto-detects which role should handle a task based on heuristic keywords.
-// Priority order (most specific first, most general last):
-//   1. Frontend — UI/HTML/CSS/React/Vue
-//   2. SRE — system/infra/monitoring/server
-//   3. QA — testing/review/security
-//   4. PM — planning/timeline/project
-//   5. Developer — general coding (default fallback)
+// ClassifyRole auto-detects which role should handle a task based on heuristic
+// keyword scoring plus strong domain anchors. Pure Go — no LLM call.
 //
-// This is a lightweight classifier that doesn't require LLM calls.
+// Routing philosophy:
+//
+//  1. Each specialist role has a weighted keyword list. A weak substring
+//     match scores 1; a strong domain anchor (file extension, framework
+//     name with surrounding whitespace, etc.) scores 3.
+//  2. A specialist wins only if its score >= 2 — a single accidental
+//     substring match (e.g. "ui " inside "quit") is NOT enough.
+//  3. If no specialist reaches 2, the task routes to Generalist. This is
+//     the critical fix: previously Developer was the fallback, but
+//     Developer's prompt forbids prose responses — so research /
+//     explanation tasks were mishandled.
+//  4. Specialist priority on ties: Frontend > SRE > QA > Developer > PM.
+//     Frontend wins over Developer because "react" / "css" / "tsx" are
+//     unambiguous frontend signals that would otherwise be lost in
+//     Developer's catch-all net.
+//
+// Why no LLM routing: a small model making a bad route decision costs a
+// full pipeline run (planner + workers + synthesizer). A pure-Go heuristic
+// is faster, deterministic, and debuggable.
 func ClassifyRole(task string) kyoci.RoleType {
 	taskLower := strings.ToLower(task)
+	scores := map[kyoci.RoleType]int{}
 
-	// ── 1. Frontend — UI/HTML/CSS/React ──────────────────────────────
-	frontendKeywords := []string{
-		"html", "css", "scss", "tailwind", "frontend", "ui ", "ux ",
-		"component", "button", "navbar", "sidebar", "footer", "landing page",
-		"responsive", "flexbox", "grid layout", "media query",
-		"react", "next.js", "nextjs", "vue", "svelte", "astro",
-		"dom", "accessibility", "aria", "typescript", ".tsx", ".jsx",
-		"web page", "webpage", "website design",
+	// ── Score helpers ─────────────────────────────────────────────────
+	add := func(rt kyoci.RoleType, keywords ...string) {
+		for _, kw := range keywords {
+			if strings.Contains(taskLower, kw) {
+				scores[rt]++
+			}
+		}
 	}
-	for _, keyword := range frontendKeywords {
-		if strings.Contains(taskLower, keyword) {
-			return kyoci.RoleFrontend
+	strong := func(rt kyoci.RoleType, anchors ...string) {
+		for _, a := range anchors {
+			if strings.Contains(taskLower, a) {
+				scores[rt] += 3
+			}
 		}
 	}
 
-	// ── 2. SRE — system/infra/monitoring ─────────────────────────────
-	// Checked BEFORE developer because "check disk", "check cpu" would match dev keyword "check".
-	sreKeywords := []string{
-		// System resources
+	// ── Frontend ──────────────────────────────────────────────────────
+	strong(kyoci.RoleFrontend,
+		".html", ".css", ".scss", ".tsx", ".jsx",
+		" react ", " reactjs", " next.js", " nextjs", " vue ", " svelte ",
+		" astro ", "tailwind", "css grid", "flexbox",
+	)
+	add(kyoci.RoleFrontend,
+		"html", "css", "frontend", "ui ", "ux ",
+		"component", "button", "navbar", "sidebar", "footer", "landing page",
+		"responsive", "media query",
+		"dom", "accessibility", "aria", "typescript",
+		"web page", "webpage", "website design",
+	)
+
+	// ── SRE ───────────────────────────────────────────────────────────
+	strong(kyoci.RoleSRE,
+		"kubernetes", " k8s ", "docker", "nginx", "grafana", "prometheus",
+		"deploy ", "deployment", "auto-scal", "autoscal",
+		"health check", "health-check",
+	)
+	add(kyoci.RoleSRE,
 		"disk space", "disk usage", "cpu ", "memory usage", "ram ",
 		"system performance", "machine performance", "server load",
-		"uptime", "health check", "health status",
-		// Infrastructure
-		"deploy", "docker", "kubernetes", "k8s", "container",
-		"nginx", "load balanc", "scaling", "autoscal",
+		"uptime", "health status",
+		"container", "load balanc", "scaling",
 		"monitor", "alert", "incident", "outage",
 		"infra", "ops ", "production server", "staging",
-		// Network
 		"port", "firewall", "dns", "ssl", "certificate",
 		"network", "connection", "ping ", "latency",
-		// Log/metrics
 		"log file", "log analysis", "logging", "tail -f",
-		"metric", "grafana", "prometheus",
-		// Common SRE commands
+		"metric",
 		"top ", "htop", "df ", "du ", "free ", "iostat", "netstat",
 		"vm_stat", "sysctl", "lscpu", "ps aux",
-	}
-	for _, keyword := range sreKeywords {
-		if strings.Contains(taskLower, keyword) {
-			return kyoci.RoleSRE
-		}
-	}
+	)
 
-	// ── 3. QA — testing/review/security ──────────────────────────────
-	// Checked BEFORE developer so "write test cases" routes to QA.
-	qaKeywords := []string{
+	// ── QA ────────────────────────────────────────────────────────────
+	strong(kyoci.RoleQA,
+		"_test.go", "_test.py", "_test.js", "_test.ts",
+		"pytest", " jest ", " mocha ", "cypress", "playwright",
+		"security scan", "vulnerab",
+	)
+	add(kyoci.RoleQA,
 		"test case", "test cases", "write test", "run test", "unit test",
 		"integration test", "e2e test", "test suite", "test coverage",
 		"bug", "regression", "qa ", "quality assur",
-		"review", "security scan", "vulnerab", "audit",
+		"review", "audit",
 		"assert", "expect", "mock", "stub", "fixture",
-		"pytest", "jest", "mocha", "cypress", "playwright",
-	}
-	for _, keyword := range qaKeywords {
-		if strings.Contains(taskLower, keyword) {
-			return kyoci.RoleQA
-		}
-	}
+	)
 
-	// ── 4. PM — planning/coordination ────────────────────────────────
-	pmKeywords := []string{
-		"project timeline", "project plan", "roadmap", "sprint",
-		"prioritize", "schedule", "milestone", "backlog",
+	// ── Developer ─────────────────────────────────────────────────────
+	// NOTE: language names ("rust", "python", "go") are deliberately NOT
+	// strong anchors — a user asking "explain the rust async ecosystem"
+	// should route to Generalist, not Developer. Build-tool commands and
+	// file extensions are unambiguous; language names are not.
+	strong(kyoci.RoleDeveloper,
+		".go ", ".go:", ".py ", ".py:", ".rs ", ".java ",
+		" go build", " go run", " go test", " cargo ", " pip install",
+		" npm install",
+	)
+	add(kyoci.RoleDeveloper,
+		"function", "method", "class", "struct", "interface",
+		"api", "endpoint", "refactor",
+		"algorithm", "data structure",
+		"debug", "stack trace", "exception",
+		"compile", "build error",
+	)
+
+	// ── PM ────────────────────────────────────────────────────────────
+	strong(kyoci.RolePM,
+		"roadmap", "gantt", "scrum", "agile plan",
+		"project plan", "project timeline",
+	)
+	add(kyoci.RolePM,
+		"sprint", "prioritize", "schedule", "milestone", "backlog",
 		"stakeholder", "resource allocat", "risk assess",
-		"gantt", "agile plan", "scrum",
+	)
+
+	// ── Pick the winner ───────────────────────────────────────────────
+	// Specialists need score >= 2 to win — single substring matches are
+	// not enough. If nobody clears the bar, route to Generalist.
+	const minScore = 2
+
+	type candidate struct {
+		role    kyoci.RoleType
+		priority int // lower = higher priority (wins ties)
 	}
-	for _, keyword := range pmKeywords {
-		if strings.Contains(taskLower, keyword) {
-			return kyoci.RolePM
+	tiebreaker := []candidate{
+		{kyoci.RoleFrontend, 1}, // most specific
+		{kyoci.RoleSRE, 2},
+		{kyoci.RoleQA, 3},
+		{kyoci.RoleDeveloper, 4},
+		{kyoci.RolePM, 5},
+	}
+
+	var best kyoci.RoleType
+	var bestScore int
+	for _, c := range tiebreaker {
+		s := scores[c.role]
+		if s > bestScore {
+			best = c.role
+			bestScore = s
 		}
 	}
 
-	// ── 5. Developer — general coding (DEFAULT FALLBACK) ─────────────
-	// Developer is the most general role — anything code/file related that
-	// didn't match a more specific role above goes here.
-	return kyoci.RoleDeveloper
+	if bestScore >= minScore {
+		return best
+	}
+	return kyoci.RoleGeneralist
 }

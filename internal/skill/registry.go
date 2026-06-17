@@ -70,12 +70,157 @@ func (r *Registry) RegisterBuiltin() error {
 
 	// Register all built-in skills
 	builtinSkills := []kyoci.Skill{
+		// Original six
 		builtin.NewMathSkill(),
 		builtin.NewTimeSkill(),
 		builtin.NewHashSkill(),
 		builtin.NewUUIDSkill(),
 		builtin.NewEncodeSkill(),
 		builtin.NewConvertSkill(),
+		// Liquid Glass expansion — 14 new zero-AI fast paths
+		builtin.NewColorSkill(),
+		builtin.NewRegexSkill(),
+		builtin.NewJSONFmtSkill(),
+		builtin.NewSQLFmtSkill(),
+		builtin.NewDiffSkill(),
+		builtin.NewJWTSkill(),
+		builtin.NewQRSkill(),
+		builtin.NewPasswordSkill(),
+		builtin.NewCharsetSkill(),
+		builtin.NewCronSkill(),
+		builtin.NewSubnetSkill(),
+		builtin.NewLoremSkill(),
+		builtin.NewMarkdownSkill(),
+		builtin.NewEmojiInfoSkill(),
+
+		// Catalog expansion (100+ skills) — grouped by file.
+
+		// encoding.go — 12 skills
+		builtin.NewBase64EncodeSkill(),
+		builtin.NewBase64DecodeSkill(),
+		builtin.NewBase32EncodeSkill(),
+		builtin.NewBase32DecodeSkill(),
+		builtin.NewURLEncodeSkill(),
+		builtin.NewURLDecodeSkill(),
+		builtin.NewHTMLEscapeSkill(),
+		builtin.NewHTMLUnescapeSkill(),
+		builtin.NewHexEncodeSkill(),
+		builtin.NewHexDecodeSkill(),
+		builtin.NewUnicodeEscapeSkill(),
+		builtin.NewUnicodeUnescapeSkill(),
+
+		// hashing.go — 13 skills
+		builtin.NewMD5Skill(),
+		builtin.NewSHA1Skill(),
+		builtin.NewSHA256Skill(),
+		builtin.NewSHA512Skill(),
+		builtin.NewSHA3Skill(),
+		builtin.NewCRC32Skill(),
+		builtin.NewCRC64Skill(),
+		builtin.NewHMACSHA256Skill(),
+		builtin.NewHMACSHA512Skill(),
+		builtin.NewBcryptHashSkill(),
+		builtin.NewBcryptVerifySkill(),
+		builtin.NewAESEncryptSkill(),
+		builtin.NewAESDecryptSkill(),
+
+		// security.go — 4 skills
+		builtin.NewPasswordStrengthSkill(),
+		builtin.NewSecretRedactSkill(),
+		builtin.NewHashIdentifySkill(),
+		builtin.NewCVEParseSkill(),
+
+		// datafmt.go — 12 skills
+		builtin.NewYAMLToJSONSkill(),
+		builtin.NewJSONToYAMLSkill(),
+		builtin.NewTOMLToJSONSkill(),
+		builtin.NewJSONToTOMLSkill(),
+		builtin.NewCSVToJSONSkill(),
+		builtin.NewJSONToCSVSkill(),
+		builtin.NewXMLToJSONSkill(),
+		builtin.NewJSONToXMLSkill(),
+		builtin.NewJSONMinifySkill(),
+		builtin.NewJSONPrettySkill(),
+		builtin.NewEnvToJSONSkill(),
+		builtin.NewJSONToEnvSkill(),
+
+		// text.go — 15 skills
+		builtin.NewSlugifySkill(),
+		builtin.NewCaseConvertSkill(),
+		builtin.NewLevenshteinSkill(),
+		builtin.NewCharCountSkill(),
+		builtin.NewWordCountSkill(),
+		builtin.NewLineCountSkill(),
+		builtin.NewByteCountSkill(),
+		builtin.NewTruncateSkill(),
+		builtin.NewPadSkill(),
+		builtin.NewReverseSkill(),
+		builtin.NewSortLinesSkill(),
+		builtin.NewDedupeLinesSkill(),
+		builtin.NewIndentSkill(),
+		builtin.NewDedentSkill(),
+		builtin.NewRegexReplaceSkill(),
+
+		// generators.go (text.go) — 10 skills
+		builtin.NewUUIDV4Skill(),
+		builtin.NewUUIDV7Skill(),
+		builtin.NewNanoidSkill(),
+		builtin.NewGUIDSkill(),
+		builtin.NewRandomIntSkill(),
+		builtin.NewRandomStringSkill(),
+		builtin.NewRandomBytesSkill(),
+		builtin.NewNonceSkill(),
+		builtin.NewFakeNameSkill(),
+		builtin.NewFakeEmailSkill(),
+
+		// net.go — 9 skills
+		builtin.NewIPValidateSkill(),
+		builtin.NewIPInfoSkill(),
+		builtin.NewMACLookupSkill(),
+		builtin.NewPortCheckSkill(),
+		builtin.NewURLParseSkill(),
+		builtin.NewURLBuildSkill(),
+		builtin.NewCIDRValidateSkill(),
+		builtin.NewCIDRMergeSkill(),
+		builtin.NewDNSLookupSkill(),
+
+		// color_extended.go — 8 skills
+		builtin.NewHexToRGBSkill(),
+		builtin.NewRGBToHexSkill(),
+		builtin.NewHexToHSLSkill(),
+		builtin.NewHSLToHexSkill(),
+		builtin.NewContrastRatioSkill(),
+		builtin.NewColorBlendSkill(),
+		builtin.NewPaletteAnalogousSkill(),
+		builtin.NewPaletteComplementarySkill(),
+
+		// math_extended.go — 12 skills
+		builtin.NewStatsSkill(),
+		builtin.NewGCDSkill(),
+		builtin.NewLCMSkill(),
+		builtin.NewIsPrimeSkill(),
+		builtin.NewPrimeFactorsSkill(),
+		builtin.NewFactorialSkill(),
+		builtin.NewBaseConvertSkill(),
+		builtin.NewRoundSigSkill(),
+		builtin.NewUnitsConvertSkill(),
+		builtin.NewCurrencyFormatSkill(),
+		builtin.NewPercentageSkill(),
+		builtin.NewRatioSimplifySkill(),
+
+		// time_extended.go — 6 skills
+		builtin.NewNowSkill(),
+		builtin.NewTimeParseSkill(),
+		builtin.NewTimeFormatSkill(),
+		builtin.NewTimeDiffSkill(),
+		builtin.NewCronNextSkill(),
+		builtin.NewEpochConvertSkill(),
+
+		// markdown_extended.go — 4 skills
+		builtin.NewMarkdownOutlineSkill(),
+		builtin.NewMarkdownTOCSkill(),
+		builtin.NewMarkdownStripSkill(),
+		builtin.NewMarkdownLinkExtractSkill(),
 	}
 
 	for _, skill := range builtinSkills {

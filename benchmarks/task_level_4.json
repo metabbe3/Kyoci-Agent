@@ -1,0 +1,4 @@
+{
+  "task": "Run the unit tests in benchmarks/app_test_env_l4/. The test TestAdd is failing because calculator.go has a bug. Parse the test error output and fix the bug in calculator.go. Once the test passes, the task is complete.\n\nVERIFY: cd benchmarks/app_test_env_l4 && go test ./...",
+  "timeout": 300
+}

@@ -57,15 +57,15 @@ type Skill interface {
 // Goroutine-safe: SkillInfo values should be treated as immutable after creation.
 type SkillInfo struct {
 	// Name is the skill name
-	Name string
+	Name string `json:"name"`
 	// Description describes what the skill does
-	Description string
+	Description string `json:"description"`
 	// Keywords are keywords that trigger this skill (optional)
-	Keywords []string
+	Keywords []string `json:"keywords,omitempty"`
 	// Category is the skill category (optional)
-	Category string
+	Category string `json:"category,omitempty"`
 	// Metadata contains additional skill metadata
-	Metadata map[string]string
+	Metadata map[string]string `json:"metadata,omitempty"`
 }
 
 // ==============================================================================

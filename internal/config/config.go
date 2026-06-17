@@ -333,6 +333,25 @@ type Config struct {
 	// PromptSkill holds configuration for the prompt-skill knowledge layer
 	// (markdown workflow bundles injected into the system prompt per task).
 	PromptSkill PromptSkillConfig `yaml:"prompt_skills"`
+
+	// HITL holds Human-In-The-Loop configuration. When Enabled, the server
+	// starts a gRPC server (port HITL.Port) that operator clients subscribe
+	// to. The orchestrator emits HelpRequests when it exhausts its retry
+	// budget on tasks carrying a VERIFY: directive.
+	HITL HITLConfig `yaml:"hitl"`
+}
+
+// HITLConfig configures the Human-In-The-Loop fallback subsystem.
+type HITLConfig struct {
+	// Enabled controls whether the gRPC HITL server is started. Default: false.
+	Enabled bool `yaml:"enabled" env:"KYOCI_HITL_ENABLED"`
+
+	// Port is the TCP port the HITL gRPC server listens on. Default: 50052.
+	Port int `yaml:"port" env:"KYOCI_HITL_PORT"`
+
+	// RequestTimeout is how long (in seconds) the orchestrator blocks waiting
+	// for an operator hint after emitting a HelpRequest. Default: 300 (5 min).
+	RequestTimeout int `yaml:"request_timeout" env:"KYOCI_HITL_REQUEST_TIMEOUT"`
 }
 
 // PromptSkillConfig configures the prompt-skill subsystem. Skills are markdown
@@ -452,6 +471,12 @@ type OrchestrationConfig struct {
 
 	// WorkerMaxToolCalls is the per-worker tool-call budget. Default: 8
 	WorkerMaxToolCalls int `yaml:"worker_max_tool_calls" env:"KYOCI_ORCHESTRATION_WORKER_MAX_TOOL_CALLS"`
+
+	// MaxRetries caps how many times the orchestrator retries a task whose
+	// VERIFY directive exits non-zero before falling back to HITL. 0 disables
+	// the retry loop entirely (legacy single-shot behavior). Default: 0.
+	// The L4 benchmark sets this to 2.
+	MaxRetries int `yaml:"max_retries" env:"KYOCI_ORCHESTRATION_MAX_RETRIES"`
 }
 
 // ==============================================================================
@@ -504,6 +529,7 @@ func Default() *Config {
 				MaxParallel:         3,
 				WorkerMaxIterations: 8,
 				WorkerMaxToolCalls:  8,
+				MaxRetries:          0, // opt-in via config
 			},
 		},
 		PromptSkill: PromptSkillConfig{
@@ -511,6 +537,11 @@ func Default() *Config {
 			Dir:              "data/skills",
 			MaxSkillsPerTask: 4,
 			MaxTotalChars:    12000,
+		},
+		HITL: HITLConfig{
+			Enabled:        false,
+			Port:           50052,
+			RequestTimeout: 300,
 		},
 	}
 
@@ -643,8 +674,9 @@ func (c *Config) Validate() error {
 			if provider.BaseURL == "" {
 				return fmt.Errorf("provider %s is enabled but has no base_url", name)
 			}
-			if provider.APIKey == "" && name != "ollama" {
-				// Ollama doesn't require an API key for local use
+			if provider.APIKey == "" && !isLocalProviderName(name) {
+				// Local OpenAI-compatible servers (Ollama, LM Studio) don't
+				// require an API key. Anything else (cloud APIs) does.
 				return fmt.Errorf("provider %s is enabled but has no api_key", name)
 			}
 			if provider.DefaultModel == "" {
@@ -859,6 +891,24 @@ func (c *Config) applyEnvOverrides() error {
 		c.Agent.Orchestration.WorkerMaxToolCalls = parseIntEnv(v, c.Agent.Orchestration.WorkerMaxToolCalls)
 		slog.Info("Override applied", "setting", "orchestration.worker_max_tool_calls", "value", c.Agent.Orchestration.WorkerMaxToolCalls)
 	}
+	if v := os.Getenv("KYOCI_ORCHESTRATION_MAX_RETRIES"); v != "" {
+		c.Agent.Orchestration.MaxRetries = parseIntEnv(v, c.Agent.Orchestration.MaxRetries)
+		slog.Info("Override applied", "setting", "orchestration.max_retries", "value", c.Agent.Orchestration.MaxRetries)
+	}
+
+	// HITL config overrides
+	if v := os.Getenv("KYOCI_HITL_ENABLED"); v != "" {
+		c.HITL.Enabled = parseBoolEnv(v)
+		slog.Info("Override applied", "setting", "hitl.enabled", "value", c.HITL.Enabled)
+	}
+	if v := os.Getenv("KYOCI_HITL_PORT"); v != "" {
+		c.HITL.Port = parseIntEnv(v, c.HITL.Port)
+		slog.Info("Override applied", "setting", "hitl.port", "value", c.HITL.Port)
+	}
+	if v := os.Getenv("KYOCI_HITL_REQUEST_TIMEOUT"); v != "" {
+		c.HITL.RequestTimeout = parseIntEnv(v, c.HITL.RequestTimeout)
+		slog.Info("Override applied", "setting", "hitl.request_timeout", "value", c.HITL.RequestTimeout)
+	}
 
 	// Prompt-skill config overrides
 	if v := os.Getenv("KYOCI_PROMPT_SKILLS_ENABLED"); v != "" {
@@ -981,4 +1031,16 @@ func parseDurationEnv(s string, defaultValue time.Duration) time.Duration {
 		return defaultValue
 	}
 	return duration
+}
+
+// isLocalProviderName returns true for OpenAI-compatible local servers that
+// don't require an API key. Mirrors the auth switch in internal/llm/providers.go
+// — keep the two lists in sync. Lives here (not in internal/llm) to avoid an
+// import cycle.
+func isLocalProviderName(name string) bool {
+	switch name {
+	case "ollama", "lmstudio":
+		return true
+	}
+	return false
 }

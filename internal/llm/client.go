@@ -42,7 +42,7 @@ func NewOpenAIClient(name string, config kyoci.ProviderConfig) (*OpenAIClient, e
 	if config.BaseURL == "" {
 		return nil, fmt.Errorf("provider %s: base_url is required", name)
 	}
-	if config.APIKey == "" && name != "ollama" {
+	if config.APIKey == "" && name != "ollama" && name != "lmstudio" {
 		return nil, fmt.Errorf("provider %s: api_key is required", name)
 	}
 

@@ -18,6 +18,7 @@ import (
 	qapkg "github.com/metabbe3/Kyoci-Agent/internal/role/qa"
 	pmpkg "github.com/metabbe3/Kyoci-Agent/internal/role/pm"
 	frontendpkg "github.com/metabbe3/Kyoci-Agent/internal/role/frontend"
+	generalistpkg "github.com/metabbe3/Kyoci-Agent/internal/role/generalist"
 )
 
 // =============================================================================
@@ -193,6 +194,7 @@ func (r *RoleRegistry) RegisterDefaults(cfg *config.Config) error {
 		kyoci.RoleQA:        qapkg.DefaultConfig(),
 		kyoci.RolePM:        pmpkg.DefaultConfig(),
 		kyoci.RoleFrontend:  frontendpkg.DefaultConfig(),
+		kyoci.RoleGeneralist: generalistpkg.DefaultConfig(),
 	}
 
 	// If config package has role defaults, use those
@@ -210,6 +212,8 @@ func (r *RoleRegistry) RegisterDefaults(cfg *config.Config) error {
 				roleType = kyoci.RolePM
 			case "frontend":
 				roleType = kyoci.RoleFrontend
+			case "generalist":
+				roleType = kyoci.RoleGeneralist
 			default:
 				r.logger.Warn("unknown role name in defaults, skipping", "name", roleName)
 				continue

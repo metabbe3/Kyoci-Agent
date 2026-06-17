@@ -86,6 +86,7 @@ func (r *Registry) Execute(ctx context.Context, name string, params map[string]i
 func (r *Registry) RegisterBuiltin() error {
 	r.logger.Info("registering built-in tools")
 	tools := []kyoci.Tool{
+		// Original 12
 		builtin.NewTerminalTool(),
 		builtin.NewFileTool(),
 		builtin.NewHTTPTool(),
@@ -96,6 +97,20 @@ func (r *Registry) RegisterBuiltin() error {
 		builtin.NewTodoTool(),
 		builtin.NewSkillTool(),
 		builtin.NewProcessTool(),
+		builtin.NewUploadedFileTool(),
+		builtin.NewExcelTool(),
+
+		// Catalog expansion (10 new tools).
+		builtin.NewPatchTool(),       // fuzzy find/replace with syntax verify
+		builtin.NewGrepTool(),        // ripgrep-backed content search
+		builtin.NewGlobTool(),        // **-aware file pattern matcher
+		builtin.NewGitTool(),         // read-only git operations
+		builtin.NewLSPTool(),         // gopls/typescript-language-server bridge
+		builtin.NewWebFetchTool(),    // URL → cleaned markdown
+		builtin.NewSecretScanTool(),  // find API keys in code
+		builtin.NewNotesTool(),       // agent scratchpad
+		builtin.NewFormatTool(),      // gofmt / prettier / rustfmt
+		builtin.NewCodeSearchTool(),  // grep + enclosing function
 	}
 	for _, t := range tools {
 		if err := r.Register(t); err != nil {

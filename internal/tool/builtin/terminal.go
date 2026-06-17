@@ -32,7 +32,7 @@ func (t *TerminalTool) Name() string {
 
 // Description returns the tool description.
 func (t *TerminalTool) Description() string {
-	return "Execute shell commands with timeout support. Runs commands in a safe environment with dangerous command detection."
+	return "Execute a shell command and return stdout+stderr. command=\"go build ./...\"; command=\"npm test\" workdir=\"./web\" timeout=60. Dangerous commands are blocked."
 }
 
 // Parameters returns the tool parameter definition.

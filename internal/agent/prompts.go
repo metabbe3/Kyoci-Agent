@@ -184,11 +184,18 @@ EXAMPLE — final answer with evidence:
 // PlannerPrompt asks the model to decompose the user task into 1-6 ordered
 // steps. Output must be a JSON array — no prose, no markdown fences. The
 // planner has no tools, so it cannot "accidentally" start executing.
+//
+// The prompt also surfaces the catalog of zero-AI skills. When a task is a
+// direct match for a skill (json format, color convert, hash, uuid, subnet
+// calc, cron parse, etc.), the planner should emit exactly ONE step with
+// tool_hint="skill". That step skips the worker LLM call entirely and runs
+// the deterministic Go skill path — a full pipeline turn saved per match,
+// which compounds across long sessions on small models.
 func PlannerPrompt(task string) string {
 	return fmt.Sprintf(`You are a task planner. Decompose the user's task into 1-6 concrete, ordered steps.
 
 Rules:
-- Each step must be independently executable with file, terminal, or search tools.
+- Each step must be independently executable with file, terminal, search, or skill tools.
 - Mark dependencies via depends_on (IDs of steps that must finish first).
 - Steps with no mutual dependency will run in PARALLEL — prefer independent steps.
 - For a simple one-shot question, output exactly ONE step.
@@ -198,8 +205,41 @@ Rules:
   GOOD: "Use the 'kyoci_fetch_user_schema' tool to fetch the user profile schema."
 - Output ONLY a JSON array. No prose, no markdown fences.
 
+ZERO-AI SKILLS — emit tool_hint="skill" for any task matching a category below.
+The registry's Match() picks the exact skill from your description; you don't
+need to name the skill explicitly.
+
+Categories:
+- encoding:    base64/base32/url/html/hex/unicode  (encode + decode)
+- hashing:     md5, sha1, sha256, sha512, sha3_256, crc32, crc64,
+               hmac_sha256, hmac_sha512, bcrypt_hash, bcrypt_verify,
+               aes_encrypt, aes_decrypt
+- jwt:         encode, decode, verify
+- datafmt:     yaml<->json, toml<->json, csv<->json, xml<->json,
+               env<->json, json minify/pretty
+- text:        slugify, case_convert (camel/snake/kebab/title),
+               levenshtein, char/word/line/byte count, truncate, pad,
+               reverse, sort_lines, dedupe_lines, indent, dedent, regex_replace
+- generators:  uuid_v4, uuid_v7, nanoid, guid, random_int, random_string,
+               random_bytes, nonce, fake_name, fake_email
+- net:         ip_validate, ip_info, mac_lookup, port_check, url_parse,
+               url_build, cidr_validate, cidr_merge, dns_lookup
+- color:       hex/rgb/hsl conversions, contrast_ratio, color_blend,
+               palette_analogous, palette_complementary
+- math:        stats, gcd, lcm, is_prime, prime_factors, factorial,
+               base_convert, round_sig, units_convert, currency_format,
+               percentage, ratio_simplify
+- time:        now, time_parse, time_format, time_diff, cron_next, epoch_convert
+- security:    password_strength, secret_redact, hash_identify, cve_parse
+- markdown:    outline, toc, strip, link_extract
+
+When the task is a direct match (e.g. "format this json", "convert #ff0000 to hsl",
+"generate a uuid", "compute subnet for 192.168.1.0/24", "sha256 of hello"), emit
+ONE step with tool_hint="skill" and a description that names the operation and
+the input. This bypasses the worker LLM call entirely — it's instant and free.
+
 Schema:
-[{"id":1,"description":"...","depends_on":[],"tool_hint":"file|terminal|search"}]
+[{"id":1,"description":"...","depends_on":[],"tool_hint":"file|terminal|search|skill"}]
 
 Task: %s`, task)
 }
@@ -279,6 +319,13 @@ func SynthesizerPrompt(task string, steps []OrchStep, results map[int]string) st
 	}
 	b.WriteString("\nWrite a clear, complete answer using only the evidence above. ")
 	b.WriteString("If a step failed or returned nothing useful, say what you could and couldn't determine. ")
-	b.WriteString("No tool calls. Plain prose only.")
+	b.WriteString("No tool calls. Plain prose only.\n\n")
+	b.WriteString("VERIFICATION TAGS — STRICT:\n")
+	b.WriteString("- If a step result starts with `[VERIFICATION FAILED`, the worker CLAIMED file creation but no file was found on disk. ")
+	b.WriteString("Report the failure honestly: state what was attempted and that the file was NOT created. ")
+	b.WriteString("Do NOT claim or imply the file exists.\n")
+	b.WriteString("- If a step result starts with `[VERIFICATION PARTIAL`, some claimed files were confirmed and others were missing or empty. ")
+	b.WriteString("Report exactly which files were confirmed and which were not.\n")
+	b.WriteString("- Never summarize a verification failure as a success. If verification failed, the user must hear that the file was not created.")
 	return b.String()
 }

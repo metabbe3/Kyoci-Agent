@@ -38,6 +38,8 @@ func TestIsBuiltinName(t *testing.T) {
 		{"todo", true},
 		{"skill", true},
 		{"process", true},
+		{"uploaded_file", true},
+		{"excel", true},
 
 		// Intelligence hooks registered by the orchestrator. These live in
 		// the same registry as the built-ins, so they must be treated as
@@ -86,6 +88,7 @@ func TestBuiltinNameSet_CoversKnownRegisterBuiltinNames(t *testing.T) {
 	knownBuiltinNames := []string{
 		"terminal", "file", "http_client", "web_search",
 		"calculator", "browser", "docs", "todo", "skill", "process",
+		"uploaded_file", "excel",
 	}
 	for _, name := range knownBuiltinNames {
 		if !IsBuiltinName(name) {

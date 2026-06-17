@@ -1,46 +1,39 @@
 # Kyoci Agent v5 — Default Configuration
 
 server:
-  grpc_port: 50051
-  rest_port: 8080
-  tls_enabled: false
-  tls_cert: ""
-  tls_key: ""
-
+    grpc_port: 50051
+    rest_port: 8080
+    tls_enabled: false
+    tls_cert: ""
+    tls_key: ""
 logging:
-  level: "info"
-  format: "json"
-
+    level: "info"
+    format: "json"
 memory:
-  db_path: "data/kyoci.db"
-  compaction_threshold: 0.75
-  max_shortterm_tokens: 4000
-
+    db_path: "data/kyoci.db"
+    compaction_threshold: 0.75
+    max_shortterm_tokens: 4000
 pool:
-  workers: 4
-  queue_size: 100
-
+    workers: 4
+    queue_size: 100
 security:
-  auth_enabled: false
-  rate_limit: 100
-  tls_enabled: false
-
+    auth_enabled: false
+    rate_limit: 100
+    tls_enabled: false
 # ── Telegram Gateway ───────────────────────────────────
 # NEVER commit a real bot token. Set it via env var KYOCI_TELEGRAM_TOKEN
 # or paste it into this field locally and keep this file out of git if you
 # must commit a different change.
 telegram:
-  enabled: true
-  token: ""
-  allowed_users: ""
-  poll_timeout: 30
-
+    enabled: true
+    token: ""
+    allowed_users: ""
+    poll_timeout: 30
 # ── Webhook Gateway ────────────────────────────────────
 # External apps can POST to /api/v1/webhook to trigger tasks
 webhook:
-  enabled: true
-  secret: ""
-
+    enabled: true
+    secret: ""
 # ── MCP (Model Context Protocol) ───────────────────────
 # Connect external MCP servers — their tools become native Kyoci tools
 # mcp:
@@ -56,99 +49,149 @@ webhook:
 #       env:
 #         GITHUB_TOKEN: "ghp_xxx"
 mcp:
-  servers: {}
-
+    servers: {}
 # ── LLM Providers ──────────────────────────────────────
 # Enable providers by setting enabled: true and adding your API key.
 # API keys can also be set via environment variables:
 #   KYOCI_PROVIDER_{NAME}_API_KEY=your-key
 providers:
-  ollama:
-    enabled: true
-    base_url: "http://192.168.2.1:11434/v1"
-    default_model: "gemma4:12b"
-    timeout: 300
-    max_retries: 2
-
-  openai:
-    enabled: false
-    base_url: "https://api.openai.com/v1"
-    default_model: "gpt-4o"
-    timeout: 120
-    max_retries: 3
-
-  anthropic:
-    enabled: false
-    base_url: "https://api.anthropic.com/v1"
-    default_model: "claude-sonnet-4-20250514"
-    timeout: 120
-    max_retries: 3
-
-  gemini:
-    enabled: false
-    base_url: "https://generativelanguage.googleapis.com/v1beta/openai"
-    default_model: "gemini-2.5-pro-preview-05-21"
-    timeout: 120
-    max_retries: 3
-
-  zai:
-    enabled: false
-    base_url: "https://open.bigmodel.cn/api/paas/v4"
-    default_model: "glm-4.7"
-    timeout: 120
-    max_retries: 3
-
-  groq:
-    enabled: false
-    base_url: "https://api.groq.com/openai/v1"
-    default_model: "llama-3.3-70b-versatile"
-    timeout: 60
-    max_retries: 3
-
-  mistral:
-    enabled: false
-    base_url: "https://api.mistral.ai/v1"
-    default_model: "codestral-latest"
-    timeout: 120
-    max_retries: 3
-
-  deepseek:
-    enabled: false
-    base_url: "https://api.deepseek.com/v1"
-    default_model: "deepseek-coder"
-    timeout: 120
-    max_retries: 3
-
-  together:
-    enabled: false
-    base_url: "https://api.together.ai/v1"
-    default_model: "meta-llama/Llama-3.3-70B-Instruct-Turbo-Free"
-    timeout: 120
-    max_retries: 3
-
-  fireworks:
-    enabled: false
-    base_url: "https://api.fireworks.ai/inference/v1"
-    default_model: "accounts/fireworks/models/llama-v3p3-70b-instruct"
-    timeout: 120
-    max_retries: 3
-
-  xai:
-    enabled: false
-    base_url: "https://api.x.ai/v1"
-    default_model: "grok-beta"
-    timeout: 120
-    max_retries: 3
-
+    ollama:
+        enabled: false
+        base_url: "http://192.168.2.1:11434/v1"
+        default_model: "gemma4:12b"
+        timeout: 300
+        max_retries: 2
+    lmstudio:
+        enabled: true
+        base_url: "http://127.0.0.1:1234/v1"
+        default_model: "google/gemma-4-e4b"
+        timeout: 300
+        max_retries: 2
+    openai:
+        enabled: false
+        base_url: "https://api.openai.com/v1"
+        default_model: "gpt-4o"
+        timeout: 120
+        max_retries: 3
+    anthropic:
+        enabled: false
+        base_url: "https://api.anthropic.com/v1"
+        default_model: "claude-haiku-4-5-20251001"
+        timeout: 120
+        max_retries: 3
+    gemini:
+        enabled: false
+        base_url: "https://generativelanguage.googleapis.com/v1beta/openai"
+        default_model: "gemini-2.5-pro-preview-05-21"
+        timeout: 120
+        max_retries: 3
+    zai:
+        enabled: false
+        base_url: "https://open.bigmodel.cn/api/paas/v4"
+        default_model: "glm-4.7"
+        timeout: 120
+        max_retries: 3
+    groq:
+        enabled: false
+        base_url: "https://api.groq.com/openai/v1"
+        default_model: "llama-3.3-70b-versatile"
+        timeout: 60
+        max_retries: 3
+    mistral:
+        enabled: false
+        base_url: "https://api.mistral.ai/v1"
+        default_model: "codestral-latest"
+        timeout: 120
+        max_retries: 3
+    deepseek:
+        enabled: false
+        base_url: "https://api.deepseek.com/v1"
+        default_model: "deepseek-coder"
+        timeout: 120
+        max_retries: 3
+    together:
+        enabled: false
+        base_url: "https://api.together.ai/v1"
+        default_model: "meta-llama/Llama-3.3-70B-Instruct-Turbo-Free"
+        timeout: 120
+        max_retries: 3
+    fireworks:
+        enabled: false
+        base_url: "https://api.fireworks.ai/inference/v1"
+        default_model: "accounts/fireworks/models/llama-v3p3-70b-instruct"
+        timeout: 120
+        max_retries: 3
+    xai:
+        enabled: false
+        base_url: "https://api.x.ai/v1"
+        default_model: "grok-beta"
+        timeout: 120
+        max_retries: 3
+    # ── Eight new providers (Liquid Glass redesign) ────────
+    cohere:
+        enabled: false
+        base_url: "https://api.cohere.ai/v1"
+        default_model: "command-r-plus"
+        timeout: 120
+        max_retries: 3
+    perplexity:
+        enabled: false
+        base_url: "https://api.perplexity.ai"
+        default_model: "llama-3.1-sonar-large-128k-online"
+        timeout: 120
+        max_retries: 3
+    openrouter:
+        enabled: false
+        base_url: "https://openrouter.ai/api/v1"
+        default_model: "anthropic/claude-3.5-sonnet"
+        timeout: 120
+        max_retries: 3
+    litellm:
+        enabled: false
+        base_url: "http://localhost:4000/v1"
+        default_model: "gpt-3.5-turbo"
+        timeout: 120
+        max_retries: 3
+    cloudflare:
+        enabled: false
+        base_url: "https://api.cloudflare.com/client/v4/accounts"
+        default_model: "@cf/meta/llama-3.1-8b-instruct"
+        timeout: 120
+        max_retries: 3
+    nim:
+        enabled: false
+        base_url: "https://integrate.api.nvidia.com/v1"
+        default_model: "meta/llama-3.1-405b-instruct"
+        timeout: 120
+        max_retries: 3
+    moonshot:
+        enabled: false
+        base_url: "https://api.moonshot.cn/v1"
+        default_model: "moonshot-v1-32k"
+        timeout: 120
+        max_retries: 3
+    qwen:
+        enabled: false
+        base_url: "https://dashscope.aliyun.com/compatible-mode/v1"
+        default_model: "qwen-plus"
+        timeout: 120
+        max_retries: 3
 # ── Agent Roles ────────────────────────────────────────
 # Roles are auto-configured with sensible defaults.
 # Only override what you need — do NOT set empty values here
 # as YAML will replace the entire role config.
 #
+# Six roles ship by default: developer, sre, qa, pm, frontend, generalist.
+# generalist is the classifier fallback for ambiguous / research / explanation
+# tasks — it does NOT inherit Developer's "no code in response text" rule.
+#
 # roles:
 #   developer:
 #     preferred_provider: "ollama"
 #     max_iterations: 15
+#   generalist:
+#     preferred_provider: "ollama"
+#     max_iterations: 10
 
 # ── Agent Execution Pipeline ──────────────────────────
 # Two execution paths are supported:
@@ -176,19 +219,32 @@ providers:
 #   KYOCI_THINKING_MAX_REFLECTIONS, KYOCI_THINKING_MAX_REPLANS,
 #   KYOCI_THINKING_CONFIDENCE_THRESHOLD, KYOCI_THINKING_FEW_SHOT
 agent:
-  orchestration:
-    enabled: true               # DEFAULT pipeline — one-job-per-call
-    max_steps: 6                # planner output cap; over-this = over-decomposed
-    max_parallel: 3             # concurrent worker goroutines
-    worker_max_iterations: 8    # per-worker ReAct iteration cap
-    worker_max_tool_calls: 8    # per-worker tool budget
-  thinking:
-    enabled: false              # legacy JSON-scratchpad mode; opt-in only
-    tool_budget: 25             # max tool calls per task before forced Reflect/terminate
-    max_reflections: 3          # hard cap on Reflect visits per task
-    max_replans: 2              # hard cap on replanning from Reflect
-    confidence_threshold: 0.7   # min Assess confidence for fast-path (skip Plan)
-    few_shot: true              # prepend worked JSON example to system prompt
+    orchestration:
+        enabled: true # DEFAULT pipeline — one-job-per-call
+        max_steps: 6 # planner output cap; over-this = over-decomposed
+        max_parallel: 3 # concurrent worker goroutines
+        worker_max_iterations: 8 # per-worker ReAct iteration cap
+        worker_max_tool_calls: 8 # per-worker tool budget
+        max_retries: 2 # pre-HITL retries on VERIFY: failure (L4 benchmark)
+    thinking:
+        enabled: false # legacy JSON-scratchpad mode; opt-in only
+        tool_budget: 25 # max tool calls per task before forced Reflect/terminate
+        max_reflections: 3 # hard cap on Reflect visits per task
+        max_replans: 2 # hard cap on replanning from Reflect
+        confidence_threshold: 0.7 # min Assess confidence for fast-path (skip Plan)
+        few_shot: true # prepend worked JSON example to system prompt
+# ── Human-In-The-Loop (HITL) ──────────────────────────
+# When the orchestrator exhausts max_retries on a task carrying a VERIFY:
+# directive, it emits a HelpRequest via gRPC. Operator clients (cmd/hitlctl)
+# subscribe to this stream and reply with hints. Hints are injected into the
+# agent's next attempt; on success, a permanent "lesson" is recorded to L3
+# SQLite so future sessions benefit.
+#
+# Disable for production runs that don't need operator fallback.
+hitl:
+    enabled: true
+    port: 50052
+    request_timeout: 300  # seconds to wait for an operator hint (5 min)
 
 # ── Prompt Skills ─────────────────────────────────────
 # Markdown knowledge bundles (Hermes-style) loaded from `dir` at startup.
@@ -198,11 +254,11 @@ agent:
 # Overrides: KYOCI_PROMPT_SKILLS_ENABLED, KYOCI_PROMPT_SKILLS_DIR,
 #   KYOCI_PROMPT_SKILLS_MAX_PER_TASK, KYOCI_PROMPT_SKILLS_MAX_CHARS
 prompt_skills:
-  enabled: true
-  dir: "data/skills"
-  max_skills_per_task: 4   # cap matched skills per task (prompt size guard)
-  max_total_chars: 4000    # cap total injected body bytes per task — kept small
-                           # because the thinking path's JSON protocol (~2.3k
-                           # chars) must stay the strongest signal before the
-                           # task for 8B-class models. Larger budgets dilute it
-                           # and trigger reflection-loop exhaustion.
+    enabled: true
+    dir: "data/skills"
+    max_skills_per_task: 4 # cap matched skills per task (prompt size guard)
+    max_total_chars: 4000 # cap total injected body bytes per task — kept small
+    # because the thinking path's JSON protocol (~2.3k
+    # chars) must stay the strongest signal before the
+    # task for 8B-class models. Larger budgets dilute it
+    # and trigger reflection-loop exhaustion.

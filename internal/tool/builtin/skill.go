@@ -30,7 +30,7 @@ func (s *SkillTool) Name() string {
 
 // Description returns the tool description.
 func (s *SkillTool) Description() string {
-	return "Save and load reusable procedures. Actions: save (store a procedure for future reuse), load (retrieve a saved procedure), list (show all saved skills), delete (remove a skill)."
+	return "Save, load, list, or delete reusable procedures (NOT the zero-AI skill registry). action=\"save\" name=\"deploy-checklist\" content=\"...\"; action=\"load\" name=\"deploy-checklist\"; action=\"list\"; action=\"delete\" name=\"...\"."
 }
 
 // Parameters returns the tool parameter definition.

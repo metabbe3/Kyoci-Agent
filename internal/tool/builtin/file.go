@@ -34,7 +34,7 @@ func (f *FileTool) Name() string {
 
 // Description returns the tool description.
 func (f *FileTool) Description() string {
-	return "Perform file operations including read, write, append, exists, list directory, and search. Path validation restricts access to allowed directories."
+	return "Read, write, append, list, search, or check files. operation=\"read\" path=\"main.go\"; operation=\"write\" path=\"hello.txt\" content=\"hi\"; operation=\"list\" path=\"./src\"; operation=\"search\" path=\".\" pattern=\"TODO\"."
 }
 
 // Parameters returns the tool parameter definition.

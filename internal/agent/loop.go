@@ -607,6 +607,17 @@ func (a *Agent) ExecuteStream(ctx context.Context, task string) (<-chan kyoci.St
 			}
 		}
 
+		// a.1 Orchestrator-Worker pipeline (streaming wrapper). When
+		// Orchestration.Enabled is true, route through the 4-phase pipeline
+		// (Planner → Workers → Synthesizer) instead of the legacy streaming
+		// ReAct loop below. Mirrors the dispatch in Execute() at line 202.
+		// The pipeline emits its final synthesizer answer as one chunk; the
+		// frontend's ThinkingDots animation covers the 10-30s pipeline runtime.
+		if a.config.Orchestration.Enabled {
+			a.executeOrchestratedStream(ctx, task, ch)
+			return
+		}
+
 		// b. Build context with system prompt (+ injected L3 intelligence), task
 		conversationCtx := NewContext()
 

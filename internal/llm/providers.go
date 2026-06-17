@@ -29,8 +29,8 @@ func NewProvider(name string, cfg kyoci.ProviderConfig) (kyoci.Provider, error) 
 	case "anthropic":
 		// Anthropic uses x-api-key header instead of Bearer
 		client.WithXAPIKey("2023-06-01")
-	case "ollama":
-		// Ollama doesn't require auth, no special config needed
+	case "ollama", "lmstudio":
+		// Local OpenAI-compatible servers don't require auth
 	default:
 		// All other providers use standard Bearer token auth
 	}
@@ -117,34 +117,54 @@ func (r *ProviderRegistry) GetAvailable() []kyoci.Provider {
 func InitProviders(cfg *config.Config) (*ProviderRegistry, error) {
 	registry := NewProviderRegistry()
 
-	// Provider base URLs
+	// Provider base URLs — 20 providers total (12 original + 8 new).
+	// New entries: cohere, perplexity, openrouter, litellm, cloudflare,
+	// nim (NVIDIA), moonshot (Kimi), qwen (Alibaba DashScope).
 	providerBaseURLs := map[string]string{
-		"openai":    "https://api.openai.com/v1",
-		"anthropic": "https://api.anthropic.com/v1",
-		"ollama":    "http://localhost:11434/v1",
-		"gemini":    "https://generativelanguage.googleapis.com/v1beta/openai",
-		"zai":       "https://open.bigmodel.cn/api/paas/v4",
-		"groq":      "https://api.groq.com/openai/v1",
-		"mistral":   "https://api.mistral.ai/v1",
-		"deepseek":  "https://api.deepseek.com/v1",
-		"together":  "https://api.together.ai/v1",
-		"fireworks": "https://api.fireworks.ai/inference/v1",
-		"xai":       "https://api.x.ai/v1",
+		"openai":      "https://api.openai.com/v1",
+		"anthropic":   "https://api.anthropic.com/v1",
+		"ollama":      "http://localhost:11434/v1",
+		"lmstudio":    "http://localhost:1234/v1",
+		"gemini":      "https://generativelanguage.googleapis.com/v1beta/openai",
+		"zai":         "https://open.bigmodel.cn/api/paas/v4",
+		"groq":        "https://api.groq.com/openai/v1",
+		"mistral":     "https://api.mistral.ai/v1",
+		"deepseek":    "https://api.deepseek.com/v1",
+		"together":    "https://api.together.ai/v1",
+		"fireworks":   "https://api.fireworks.ai/inference/v1",
+		"xai":         "https://api.x.ai/v1",
+		"cohere":      "https://api.cohere.ai/v1",
+		"perplexity":  "https://api.perplexity.ai",
+		"openrouter":  "https://openrouter.ai/api/v1",
+		"litellm":     "http://localhost:4000/v1",
+		"cloudflare":  "https://api.cloudflare.com/client/v4/accounts",
+		"nim":         "https://integrate.api.nvidia.com/v1",
+		"moonshot":    "https://api.moonshot.cn/v1",
+		"qwen":        "https://dashscope.aliyun.com/compatible-mode/v1",
 	}
 
 	// Default models for each provider
 	defaultModels := map[string]string{
-		"openai":    "gpt-4-turbo-preview",
-		"anthropic": "claude-3-opus-20240229",
-		"ollama":    "llama2",
-		"gemini":    "gemini-pro",
-		"zai":       "glm-4",
-		"groq":      "llama2-70b-4096",
-		"mistral":   "mistral-large-latest",
-		"deepseek":  "deepseek-chat",
-		"together":  "mistralai/Mixtral-8x7B-Instruct-v0.1",
-		"fireworks": "accounts/fireworks/models/llama-v2-7b-chat",
-		"xai":       "grok-beta",
+		"openai":      "gpt-4-turbo-preview",
+		"anthropic":   "claude-3-opus-20240229",
+		"ollama":      "llama2",
+		"lmstudio":    "google/gemma-4-e4b",
+		"gemini":      "gemini-pro",
+		"zai":         "glm-4",
+		"groq":        "llama2-70b-4096",
+		"mistral":     "mistral-large-latest",
+		"deepseek":    "deepseek-chat",
+		"together":    "mistralai/Mixtral-8x7B-Instruct-v0.1",
+		"fireworks":   "accounts/fireworks/models/llama-v2-7b-chat",
+		"xai":         "grok-beta",
+		"cohere":      "command-r-plus",
+		"perplexity":  "llama-3.1-sonar-large-128k-online",
+		"openrouter":  "anthropic/claude-3.5-sonnet",
+		"litellm":     "gpt-3.5-turbo",
+		"cloudflare":  "@cf/meta/llama-3.1-8b-instruct",
+		"nim":         "meta/llama-3.1-405b-instruct",
+		"moonshot":    "moonshot-v1-32k",
+		"qwen":        "qwen-plus",
 	}
 
 	// Create providers from config

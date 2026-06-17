@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 
+	kyoci "github.com/metabbe3/Kyoci-Agent/pkg"
+
 	"github.com/metabbe3/Kyoci-Agent/internal/skill/builtin"
 )
 
@@ -55,6 +57,11 @@ func TestRegistry(t *testing.T) {
 }
 
 // TestRegisterBuiltin tests registering all built-in skills.
+//
+// The catalog is grouped into ~12 categories totalling 125+ skills. This
+// test verifies (a) the total count meets the floor (>=100), (b) every
+// category is present, and (c) one representative skill from each category
+// is registered.
 func TestRegisterBuiltin(t *testing.T) {
 	registry := NewRegistry()
 
@@ -63,23 +70,66 @@ func TestRegisterBuiltin(t *testing.T) {
 	}
 
 	infos := registry.List()
-	expectedSkills := []string{"math", "time", "hash", "uuid", "encode", "convert"}
-	if len(infos) != len(expectedSkills) {
-		t.Errorf("Expected %d built-in skills, got %d", len(expectedSkills), len(infos))
+
+	// Floor: catalog must ship 100+ skills.
+	if len(infos) < 100 {
+		t.Errorf("Expected ≥100 built-in skills, got %d", len(infos))
+	}
+	t.Logf("registered %d built-in skills", len(infos))
+
+	// Original 20 — must all still be present.
+	originals := []string{
+		"math", "time", "hash", "uuid", "encode", "convert",
+		"color", "regex", "jsonfmt", "sqlfmt", "diff",
+		"jwt", "qr", "password", "charset", "cron",
+		"subnet", "lorem", "markdown", "emojinfo",
+	}
+	for _, name := range originals {
+		if !hasSkill(infos, name) {
+			t.Errorf("Expected original skill %q not found", name)
+		}
 	}
 
-	for _, name := range expectedSkills {
-		found := false
-		for _, info := range infos {
-			if info.Name == name {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Errorf("Expected built-in skill %q not found", name)
+	// Representative skills from each new category.
+	categoryReps := []string{
+		// encoding
+		"base64_encode", "url_decode", "hex_decode", "unicode_escape",
+		// hashing
+		"md5", "sha256", "bcrypt_hash", "aes_encrypt",
+		// security
+		"password_strength", "secret_redact", "hash_identify", "cve_parse",
+		// datafmt
+		"yaml_to_json", "csv_to_json", "toml_to_json", "env_to_json",
+		// text
+		"slugify", "case_convert", "levenshtein", "regex_replace",
+		// generators
+		"uuid_v4", "uuid_v7", "nanoid", "random_string",
+		// net
+		"ip_validate", "mac_lookup", "dns_lookup", "cidr_merge",
+		// color
+		"hex_to_rgb", "contrast_ratio", "palette_complementary",
+		// math
+		"stats", "gcd", "is_prime", "factorial", "base_convert", "percentage",
+		// time
+		"now", "time_diff", "cron_next", "epoch_convert",
+		// markdown
+		"markdown_toc", "markdown_strip", "markdown_link_extract",
+	}
+	for _, name := range categoryReps {
+		if !hasSkill(infos, name) {
+			t.Errorf("Expected category skill %q not found", name)
 		}
 	}
+}
+
+// hasSkill reports whether infos contains a skill with the given name.
+func hasSkill(infos []kyoci.SkillInfo, name string) bool {
+	for _, info := range infos {
+		if info.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // TestMathSkill tests the math skill.

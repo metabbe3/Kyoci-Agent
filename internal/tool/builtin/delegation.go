@@ -67,7 +67,7 @@ func (d *DelegationTool) Name() string {
 
 // Description returns a human-readable description of what this tool does.
 func (d *DelegationTool) Description() string {
-	return "Delegate sub-tasks to sub-agents for parallel execution. Actions: spawn (start a sub-agent), list (show all tasks), status (check specific task), wait (block until task completes). Use for breaking complex work into independent pieces."
+	return "Delegate a sub-task to a specialist sub-agent for parallel execution. action=\"spawn\" goal=\"write tests for parser_test.go\"; action=\"wait_all\" (blocks until all spawned sub-agents finish, then returns their results). Use when work splits into independent parts. Max 3 concurrent. Each sub-agent gets 180s."
 }
 
 // Parameters returns the parameter definition for this tool.

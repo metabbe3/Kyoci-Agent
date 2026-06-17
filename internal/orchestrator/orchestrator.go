@@ -54,6 +54,11 @@ type Orchestrator struct {
 	mu               sync.RWMutex
 	started          bool
 	shutdownChan     chan struct{}
+
+	// hitlCfg holds the optional Human-In-The-Loop retry configuration. Set
+	// via SetHITL from main.go when the operator wires up the gRPC server.
+	// When nil (or MaxRetries=0), tasks execute single-shot as before.
+	hitlCfg *HITLConfig
 }
 
 // New creates a new Orchestrator and initializes ALL subsystems.
@@ -269,8 +274,10 @@ func (o *Orchestrator) Execute(ctx context.Context, task string, roleType kyoci.
 		return nil, fmt.Errorf("failed to get role %s: %w", roleType.String(), err)
 	}
 
-	// Delegate to the role agent's Execute
-	result, err := agentRole.Execute(ctx, task, o.memoryMgr)
+	// Delegate to the role agent's Execute — wrapped in the HITL retry loop
+	// when the task carries a VERIFY: directive. executeWithRetry handles the
+	// single-shot fast path internally when no directive is present.
+	result, err := o.executeWithRetry(ctx, task, agentRole, roleType)
 	if err != nil {
 		o.logger.Error("task execution failed", "error", err, "role", roleType.String())
 		span.SetAttribute("error", err.Error())
@@ -481,4 +488,18 @@ func (o *Orchestrator) GetExperienceStats() memory.ExperienceStats {
 		return memory.ExperienceStats{}
 	}
 	return o.experienceEngine.GetStats()
+}
+
+// GetProviderRegistry returns the LLM provider registry for direct provider
+// access from the dashboard (model enumeration, IsAvailable checks, direct
+// streaming chat). Read-only access is safe; mutating the registry requires
+// a server restart.
+func (o *Orchestrator) GetProviderRegistry() *llm.ProviderRegistry {
+	return o.providerReg
+}
+
+// GetSkillRegistry returns the prompt-skill registry. Read-only; the set of
+// registered skills only changes at startup.
+func (o *Orchestrator) GetSkillRegistry() *skill.Registry {
+	return o.skillReg
 }

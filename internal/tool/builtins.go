@@ -25,16 +25,30 @@ package tool
 
 var builtinNames = map[string]bool{
 	// Tools registered by Registry.RegisterBuiltin().
-	"terminal":    true,
-	"file":        true,
-	"http_client": true,
-	"web_search":  true,
-	"calculator":  true,
-	"browser":     true,
-	"docs":        true,
-	"todo":        true,
-	"skill":       true,
-	"process":     true,
+	"terminal":      true,
+	"file":          true,
+	"http_client":   true,
+	"web_search":    true,
+	"calculator":    true,
+	"browser":       true,
+	"docs":          true,
+	"todo":          true,
+	"skill":         true,
+	"process":       true,
+	"uploaded_file": true,
+	"excel":         true,
+
+	// Catalog expansion — 10 new tools.
+	"patch":         true,
+	"grep":          true,
+	"glob":          true,
+	"git":           true,
+	"lsp":           true,
+	"web_fetch":     true,
+	"secret_scan":   true,
+	"notes":         true,
+	"format":        true,
+	"codesearch":    true,
 
 	// Intelligence hooks registered by the orchestrator into the same
 	// registry. Treated as built-in for allowlisting purposes.

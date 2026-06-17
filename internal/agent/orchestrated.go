@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strings"
 	"sync"
 
@@ -142,6 +143,36 @@ func (a *Agent) executeOrchestrated(ctx context.Context, task string) (*kyoci.Ta
 	}, nil
 }
 
+// executeOrchestratedStream runs the orchestrator pipeline and emits the final
+// synthesizer output as stream chunks. Called from ExecuteStream when
+// Orchestration.Enabled is true — mirrors the dispatch in Execute() at loop.go:202.
+//
+// This is not token-streaming. The orchestrator makes 4+ focused LLM calls
+// (planner, N workers, synthesizer); only the synthesizer's final answer is
+// user-facing. While the pipeline runs (typically 10-30s on a local 14B model),
+// the frontend shows its ThinkingDots animation because no content chunk has
+// arrived yet. When the synthesizer returns, this wrapper emits one FinalChunk
+// carrying the full answer; the frontend appends chunk.content and breaks on
+// chunk.done.
+func (a *Agent) executeOrchestratedStream(ctx context.Context, task string, ch chan<- kyoci.StreamChunk) {
+	result, err := a.executeOrchestrated(ctx, task)
+	if err != nil {
+		ch <- kyoci.StreamChunk{
+			Error: fmt.Errorf("orchestrator failed: %w", err),
+			Done:  true,
+		}
+		return
+	}
+	if result == nil || strings.TrimSpace(result.Content) == "" {
+		ch <- kyoci.StreamChunk{
+			Error: fmt.Errorf("orchestrator returned no content"),
+			Done:  true,
+		}
+		return
+	}
+	ch <- kyoci.FinalChunk(result.Content, result.Usage, kyoci.FinishStop)
+}
+
 // effectiveOrchConfig returns the orchestrator config with zero-valued fields
 // filled in from DefaultOrchestratorConfig. Lets callers set Enabled=true and
 // leave the rest to defaults.
@@ -229,18 +260,16 @@ func mcpToolsReferencedBy(desc string, all []kyoci.ToolDefinition) []string {
 	return hit
 }
 
-// filterToolsForMCP returns a tool list containing only the referenced MCP
-// tool(s) plus the minimal set the worker needs to act on their output
-// (`file` to write results, `terminal` for parity). All other tools —
-// especially web_search and memory_recall, the substitutes the model reaches
-// for — are stripped.
-func filterToolsForMCP(all []kyoci.ToolDefinition, referenced []string) []kyoci.ToolDefinition {
-	want := make(map[string]bool, len(referenced)+2)
-	for _, n := range referenced {
+// filterTools returns the subset of `all` whose Name appears in `keep`. Order
+// follows `all`. Used to physically strip competing tools from a worker's
+// payload so the model cannot substitute away from the assigned tool family
+// — the single highest-leverage enforcement against small-model tool-substitution
+// defects (gemma-4 reaching for web_search/memory_recall instead of file write).
+func filterTools(all []kyoci.ToolDefinition, keep []string) []kyoci.ToolDefinition {
+	want := make(map[string]bool, len(keep))
+	for _, n := range keep {
 		want[n] = true
 	}
-	want["file"] = true
-	want["terminal"] = true
 	var out []kyoci.ToolDefinition
 	for _, td := range all {
 		if want[td.Name] {
@@ -248,6 +277,26 @@ func filterToolsForMCP(all []kyoci.ToolDefinition, referenced []string) []kyoci.
 		}
 	}
 	return out
+}
+
+// filterToolsForMCP returns a tool list containing only the referenced MCP
+// tool(s) plus the minimal set the worker needs to act on their output
+// (`file` to write results, `terminal` for parity). All other tools —
+// especially web_search and memory_recall, the substitutes the model reaches
+// for — are stripped.
+func filterToolsForMCP(all []kyoci.ToolDefinition, referenced []string) []kyoci.ToolDefinition {
+	keep := append([]string{}, referenced...)
+	keep = append(keep, "file", "terminal")
+	return filterTools(all, keep)
+}
+
+// filterToolsForFileCreation restricts the worker payload to the tools that
+// can actually produce an artifact on disk. Without this, the model reaches
+// for web_search, memory_recall, browser, docs, etc. and reports success from
+// parametric memory — the same substitution defect filterToolsForMCP solves
+// for MCP-referenced steps.
+func filterToolsForFileCreation(all []kyoci.ToolDefinition) []kyoci.ToolDefinition {
+	return filterTools(all, []string{"file", "terminal"})
 }
 
 // toolNames extracts the Name field from a slice of tool definitions, for logging.
@@ -361,6 +410,10 @@ func (a *Agent) planTask(ctx context.Context, task string) ([]OrchStep, error) {
 
 	steps, err := parseOrchSteps(resp.Content)
 	if err != nil {
+		// Log full raw output (truncated to 1KB) so future parser failures are
+		// diagnosable. The error message itself only carries 200 chars.
+		a.logger.Warn("orchestrator: planner parse failed across all tiers",
+			"len", len(resp.Content), "raw_head", truncate(resp.Content, 1000))
 		return nil, fmt.Errorf("planner output parse failed: %w (raw: %q)", err, truncate(resp.Content, 200))
 	}
 
@@ -398,11 +451,28 @@ func parseOrchSteps(input string) ([]OrchStep, error) {
 		}
 	}
 
+	// Tier 2.5: strip trailing commas before ] or }. Small models (gemma-4-e4b)
+	// routinely emit `[{...},{...},]` which strict JSON rejects. This is the
+	// single most common planner failure mode. Run after fence-stripping so
+	// the regex doesn't touch inside fenced blocks.
+	noCommas := stripTrailingCommas(stripped)
+	if noCommas != stripped {
+		if err := json.Unmarshal([]byte(noCommas), &steps); err == nil {
+			return steps, nil
+		}
+	}
+
 	// Tier 3: extract outermost [ ... ] block — tolerates leading prose like
-	// "Here is the plan:\n[...]"
+	// "Here is the plan:\n[...]". Also retry with trailing commas stripped
+	// in case the array itself had `[...,]`.
 	if arr := extractOutermostArray(stripped); arr != "" {
 		if err := json.Unmarshal([]byte(arr), &steps); err == nil {
 			return steps, nil
+		}
+		if arrStripped := stripTrailingCommas(arr); arrStripped != arr {
+			if err := json.Unmarshal([]byte(arrStripped), &steps); err == nil {
+				return steps, nil
+			}
 		}
 	}
 
@@ -458,6 +528,18 @@ func truncate(s string, n int) string {
 	return s[:n] + "..."
 }
 
+// trailingCommaRe matches a comma (optionally followed by whitespace)
+// immediately before a closing `}` or `]`. Used by parseOrchSteps tier 2.5 to
+// tolerate the #1 small-model JSON mistake: trailing commas in arrays/objects.
+// Safe because strict JSON parsing has already failed by the time this runs.
+var trailingCommaRe = regexp.MustCompile(`,\s*([}\]])`)
+
+// stripTrailingCommas removes trailing commas before closing braces/brackets.
+// Example: `[{"a":1},{"b":2},]` → `[{"a":1},{"b":2}]`.
+func stripTrailingCommas(s string) string {
+	return trailingCommaRe.ReplaceAllString(s, "$1")
+}
+
 // -----------------------------------------------------------------------------
 // Phase 2 + 3: Dispatcher
 // -----------------------------------------------------------------------------
@@ -504,6 +586,30 @@ func (a *Agent) executeWorkers(ctx context.Context, task string, steps []OrchSte
 			go func(s OrchStep) {
 				defer wg.Done()
 				defer func() { <-sem }()
+
+				// Skill fast-path: when the planner explicitly assigned
+				// tool_hint="skill", skip the worker LLM call entirely
+				// and run the matching zero-AI skill from the registry.
+				// A skill match is deterministic and instant — saves a
+				// full worker turn (system+user messages + tool round-trip)
+				// on every trivial computation (json format, color convert,
+				// hash, uuid, subnet calc, cron parse, etc.).
+				if strings.TrimSpace(s.ToolHint) == "skill" && a.skills != nil {
+					if sk, ok := a.skills.Match(task); ok {
+						a.logger.Info("orchestrator: skill fast-path",
+							"step", s.ID, "skill", sk.Name())
+						if out, err := a.skills.Execute(ctx, sk.Name(), task); err == nil {
+							mu.Lock()
+							results[s.ID] = out
+							done[s.ID] = true
+							mu.Unlock()
+							return
+						} else {
+							a.logger.Warn("orchestrator: skill fast-path failed, falling back to worker",
+								"step", s.ID, "skill", sk.Name(), "error", err)
+						}
+					}
+				}
 
 				// Snapshot the prior results this worker is allowed to see.
 				mu.Lock()
@@ -611,17 +717,24 @@ func (a *Agent) runWorker(ctx context.Context, task string, step OrchStep, prior
 	// filtering: with competing tools (web_search, memory_recall, etc.)
 	// physically removed from the payload, the model cannot substitute them
 	// for the named MCP tool — the #1 failure mode that prompt constraints
-	// alone could not fix in gemma4:12b. When no MCP tool is named, the full
-	// tool list is used so L1/L2 paths are unaffected.
+	// alone could not fix in gemma4:12b. File-creation steps get the same
+	// treatment for the same reason — without enforcement the model substitutes
+	// list/search/recall for write and then hallucinates success. When neither
+	// condition applies, the full tool list is used so L1/L2 paths are unaffected.
 	var toolDefs []kyoci.ToolDefinition
 	if a.tools != nil {
 		all := a.tools.List()
 		referenced := mcpToolsReferencedBy(step.Description, all)
-		if len(referenced) > 0 {
+		switch {
+		case len(referenced) > 0:
 			toolDefs = filterToolsForMCP(all, referenced)
 			a.logger.Info("orchestrator: worker tool list filtered for MCP step",
 				"step", step.ID, "mcp_tools", referenced, "kept", toolNames(toolDefs))
-		} else {
+		case isFileCreationStep(step.Description):
+			toolDefs = filterToolsForFileCreation(all)
+			a.logger.Info("orchestrator: worker tool list filtered for file-creation step",
+				"step", step.ID, "kept", toolNames(toolDefs))
+		default:
 			toolDefs = all
 		}
 	}
@@ -643,7 +756,9 @@ func (a *Agent) runWorker(ctx context.Context, task string, step OrchStep, prior
 		// but Layer 2 catches that case — this is the belt-and-suspenders layer
 		// for providers that DO honor tool_choice. On later turns, leave it
 		// "" (auto) so the model can decide when it has enough evidence.
-		if iter == 0 && strings.TrimSpace(step.ToolHint) != "" {
+		// Fires when either the planner assigned a tool_hint OR the step was
+		// detected as file-creation (which needs the `file` write op specifically).
+		if iter == 0 && (strings.TrimSpace(step.ToolHint) != "" || isFileCreationStep(step.Description)) {
 			req.ToolChoice = "required"
 		}
 
@@ -663,25 +778,33 @@ func (a *Agent) runWorker(ctx context.Context, task string, step OrchStep, prior
 			}
 
 			// Layer 2: evidence guard. A worker whose step carries a non-empty
-			// tool_hint must gather real evidence (a tool call) before answering.
-			// On the FIRST turn, if the model answered from memory, inject the
-			// WorkerEvidenceNudge once and re-run instead of accepting. This is
-			// the load-bearing fix: qwen2.5-coder:14b otherwise answers every
-			// step from parametric memory and the synthesizer honestly reports
-			// "did not find" because no file was ever read.
+			// tool_hint OR expresses file-creation intent must gather real
+			// evidence (a tool call) before answering. On the FIRST turn, if
+			// the model answered from memory, inject the WorkerEvidenceNudge
+			// once and re-run instead of accepting. This is the load-bearing
+			// fix: qwen2.5-coder:14b otherwise answers every step from
+			// parametric memory and the synthesizer honestly reports
+			// "did not find" because no file was ever read. The file-creation
+			// case extends the same defense to steps the planner didn't assign
+			// a tool_hint for but which clearly need a file write.
 			hint := strings.TrimSpace(step.ToolHint)
-			if iter == 0 && hint != "" && !nudged {
+			needsEvidence := hint != "" || isFileCreationStep(step.Description)
+			if iter == 0 && needsEvidence && !nudged {
+				nudgeHint := hint
+				if nudgeHint == "" {
+					nudgeHint = "file"
+				}
 				messages = append(messages, kyoci.Message{
 					Role:    kyoci.RoleAssistant,
 					Content: out,
 				})
 				messages = append(messages, kyoci.Message{
 					Role:    kyoci.RoleUser,
-					Content: WorkerEvidenceNudge(step.ToolHint),
+					Content: WorkerEvidenceNudge(nudgeHint),
 				})
 				nudged = true
 				a.logger.Info("orchestrator: worker evidence nudge injected",
-					"step", step.ID, "tool_hint", hint)
+					"step", step.ID, "tool_hint", nudgeHint)
 				continue
 			}
 
@@ -689,12 +812,17 @@ func (a *Agent) runWorker(ctx context.Context, task string, step OrchStep, prior
 			// Accept the answer so the pipeline makes progress, but tag it so the
 			// synthesizer can honestly report that this step produced no observed
 			// evidence — the user sees the gap instead of mistaking memory for fact.
-			if nudged && hint != "" && toolCallsMade == 0 {
+			// The file-creation case is also caught here; the verification gate
+			// below will additionally rewrite the output with [VERIFICATION FAILED].
+			if nudged && needsEvidence && toolCallsMade == 0 {
 				out = "[no tool evidence — answer is from model memory] " + out
 			}
 
 			a.logger.Info("orchestrator: worker done",
 				"step", step.ID, "iters", iter+1, "tool_calls", toolCallsMade, "nudged", nudged)
+			if isFileCreationStep(step.Description) {
+				out = a.verifyFileCreation(ctx, step, messages, out)
+			}
 			return out, nil
 		}
 
@@ -739,6 +867,138 @@ func (a *Agent) runWorker(ctx context.Context, task string, step OrchStep, prior
 		lastContent = fmt.Sprintf("[step %d did not produce a final finding within %d iterations]", step.ID, maxIter)
 	}
 	return lastContent, nil
+}
+
+// verifyFileCreation is the load-bearing defense against hallucinated file
+// creation. When a worker step expresses creation intent (isFileCreationStep),
+// the worker's prose answer is NOT trusted until at least one of the paths it
+// wrote is confirmed to exist on disk.
+//
+// Candidate paths come from the worker's OWN file tool-call arguments —
+// messages with Role=assistant + ToolCalls where file was invoked with
+// operation in {write, append, edit}. Parsing prose is intentionally avoided:
+// regex on worker text false-positives on version numbers, URLs, "e.g.", and
+// false-negatives on paths the model used but didn't name in its summary.
+//
+// Verification invokes file operation=exists via a.act() so path resolution
+// matches the file tool's allowedDirs logic exactly. The file tool returns
+// either "Path does not exist: ..." or "Path exists: ... (type: ..., size: N bytes)".
+//
+// Returns `out` unchanged on full success; otherwise returns `out` prefixed
+// with a [VERIFICATION FAILED] or [VERIFICATION PARTIAL] tag so the
+// synthesizer honestly reports the gap instead of amplifying the hallucination.
+func (a *Agent) verifyFileCreation(ctx context.Context, step OrchStep, messages []kyoci.Message, out string) string {
+	candidates := extractWrittenPaths(messages)
+	if len(candidates) == 0 {
+		// Worker was assigned a file-creation step but never invoked file
+		// write/append/edit. This is the single most common hallucination
+		// pattern — fail closed so the synthesizer cannot parrot the claim.
+		a.logger.Warn("orchestrator: verification failed — no file-write tool calls",
+			"step", step.ID, "desc", step.Description)
+		return "[VERIFICATION FAILED: worker claimed file creation but made no file-write tool calls] " + out
+	}
+
+	var missing, empty []string
+	for _, p := range candidates {
+		result, err := a.act(ctx, kyoci.ToolCall{
+			ID:   fmt.Sprintf("verify-%d", step.ID),
+			Name: "file",
+			Arguments: mustJSON(map[string]string{
+				"operation": "exists",
+				"path":      p,
+			}),
+		})
+		if err != nil {
+			// Tool execution error — treat as missing rather than fail open.
+			a.logger.Warn("orchestrator: verification exists call failed",
+				"step", step.ID, "path", p, "err", err)
+			missing = append(missing, p)
+			continue
+		}
+		switch {
+		case strings.Contains(result, "does not exist"):
+			missing = append(missing, p)
+		case strings.Contains(result, "size: 0 bytes"):
+			empty = append(empty, p)
+		}
+	}
+
+	switch {
+	case len(missing) == len(candidates):
+		// Every claimed path is absent — full hallucination.
+		a.logger.Warn("orchestrator: verification failed — no claimed files exist",
+			"step", step.ID, "checked", candidates, "missing", missing)
+		return fmt.Sprintf("[VERIFICATION FAILED: claimed file creation but none of %v found on disk] %s", candidates, out)
+	case len(missing) > 0 || len(empty) > 0:
+		// Mixed: some confirmed, some missing/empty.
+		a.logger.Warn("orchestrator: verification partial",
+			"step", step.ID, "missing", missing, "empty", empty, "checked", candidates)
+		return fmt.Sprintf("[VERIFICATION PARTIAL: missing=%v empty=%v confirmed=%v] %s",
+			missing, empty, subtractSet(candidates, append(missing, empty...)), out)
+	default:
+		a.logger.Info("orchestrator: verification passed — all claimed files exist",
+			"step", step.ID, "checked", candidates)
+		return out
+	}
+}
+
+// extractWrittenPaths scans the worker conversation for `file` tool calls with
+// operation in {write, append, edit} and returns the distinct paths targeted.
+// Order follows first occurrence. Empty paths and duplicates are skipped.
+func extractWrittenPaths(messages []kyoci.Message) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, msg := range messages {
+		if msg.Role != kyoci.RoleAssistant {
+			continue
+		}
+		for _, tc := range msg.ToolCalls {
+			if tc.Name != "file" {
+				continue
+			}
+			var args struct {
+				Operation string `json:"operation"`
+				Path      string `json:"path"`
+			}
+			if err := json.Unmarshal([]byte(tc.Arguments), &args); err != nil {
+				continue
+			}
+			op := strings.ToLower(strings.TrimSpace(args.Operation))
+			if op != "write" && op != "append" && op != "edit" {
+				continue
+			}
+			p := strings.TrimSpace(args.Path)
+			if p == "" || seen[p] {
+				continue
+			}
+			seen[p] = true
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// mustJSON marshals v to a JSON string. Only used for internal tool-call
+// argument synthesis where the shape is fixed and marshal cannot fail.
+func mustJSON(v any) string {
+	b, _ := json.Marshal(v)
+	return string(b)
+}
+
+// subtractSet returns elements of `all` not present in `remove`. Used by the
+// verification gate to compute the "confirmed" subset for partial results.
+func subtractSet(all, remove []string) []string {
+	skip := make(map[string]bool, len(remove))
+	for _, r := range remove {
+		skip[r] = true
+	}
+	var out []string
+	for _, a := range all {
+		if !skip[a] {
+			out = append(out, a)
+		}
+	}
+	return out
 }
 
 // -----------------------------------------------------------------------------
