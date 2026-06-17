@@ -1,32 +1,75 @@
 syntax = "proto3";
-package agent;
-option go_package = "github.com/nicholas/ai-agent/grpc/proto";
 
-service AgentService {
-  rpc Chat(ChatRequest) returns (ChatResponse);
-  rpc StreamChat(ChatRequest) returns (stream ChatResponse);
-  rpc Status(StatusRequest) returns (StatusResponse);
+package kyoci.v5;
+
+option go_package = "github.com/metabbe3/Kyoci-Agent/proto;kyociv5";
+
+import "role.proto";
+import "common.proto";
+import "tool.proto";
+import "memory.proto";
+
+// TaskRequest represents a request to execute a task
+message TaskRequest {
+  string prompt = 1;
+  RoleType role = 2;
+  Metadata context = 3;
+  bool stream = 4;
+  repeated string tools = 5;
+  int32 max_iterations = 6;
 }
 
-message ChatRequest {
-  string message = 1;
-  string provider = 2;
-  string session_id = 3;
+// TaskResponse represents the result of a task execution
+message TaskResponse {
+  string result = 1;
+  RoleType role = 2;
+  TokenUsage usage = 3;
+  int32 tool_calls_made = 4;
+  int32 iterations = 5;
+  string error = 6;
 }
 
-message ChatResponse {
-  string message = 1;
-  string model = 2;
-  int32 tier = 3;
-  int64 tokens = 4;
-  string session_id = 5;
+// TaskStreamChunk represents a chunk of streaming task response
+message TaskStreamChunk {
+  string partial = 1;
+  ToolCall tool_call = 2;
+  bool done = 3;
+  TokenUsage usage = 4;
 }
 
+// StatusRequest is an empty request for status check
 message StatusRequest {}
 
+// StatusResponse represents the current agent status
 message StatusResponse {
-  string status = 1;
-  string version = 2;
-  int32 providers = 3;
-  int32 tools = 4;
+  string version = 1;
+  int64 uptime_seconds = 2;
+  repeated RoleType active_roles = 3;
+  repeated ProviderType providers = 4;
+  int64 memory_usage = 5;
+}
+
+// ToolListResponse returns available tools
+message ToolListResponse {
+  repeated ToolDefinition tools = 1;
+}
+
+// AgentService provides main agent orchestration operations
+service AgentService {
+  rpc Execute(TaskRequest) returns (TaskResponse);
+  rpc ExecuteStream(TaskRequest) returns (stream TaskStreamChunk);
+  rpc GetStatus(StatusRequest) returns (StatusResponse);
+}
+
+// MemoryService provides memory storage and retrieval operations
+service MemoryService {
+  rpc Store(StoreRequest) returns (StoreResponse);
+  rpc Recall(RecallRequest) returns (RecallResponse);
+  rpc Compact(CompactRequest) returns (google.protobuf.Empty);
+}
+
+// ToolService provides tool discovery and execution operations
+service ToolService {
+  rpc ListTools(google.protobuf.Empty) returns (ToolListResponse);
+  rpc ExecuteTool(ToolCallRequest) returns (ToolCallResponse);
 }

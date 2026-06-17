@@ -1,0 +1,38 @@
+syntax = "proto3";
+
+package kyoci.v5;
+
+option go_package = "github.com/metabbe3/Kyoci-Agent/proto;kyociv5";
+
+import "llm.proto";
+
+// RoleType defines predefined agent roles
+enum RoleType {
+  ROLE_TYPE_UNSPECIFIED = 0;
+  ROLE_TYPE_DEVELOPER = 1;
+  ROLE_TYPE_SRE = 2;
+  ROLE_TYPE_QA = 3;
+  ROLE_TYPE_PM = 4;
+  ROLE_TYPE_CUSTOM = 5;
+}
+
+// RoleCapability describes a specific capability of a role
+message RoleCapability {
+  string name = 1;
+  string description = 2;
+}
+
+// RoleConfig defines the configuration for an agent role
+message RoleConfig {
+  RoleType role_type = 1;
+  string system_prompt = 2;
+  repeated string tools = 3;
+  ProviderType preferred_provider = 4;
+  int32 max_iterations = 5;
+  repeated RoleCapability capabilities = 6;
+}
+
+// RoleRegistration represents a request to register a new role
+message RoleRegistration {
+  RoleConfig config = 1;
+}

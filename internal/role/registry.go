@@ -1,0 +1,415 @@
+package role
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"sync"
+
+	kyoci "github.com/metabbe3/Kyoci-Agent/pkg"
+	"github.com/metabbe3/Kyoci-Agent/internal/agent"
+	"github.com/metabbe3/Kyoci-Agent/internal/config"
+	"github.com/metabbe3/Kyoci-Agent/internal/llm"
+	"github.com/metabbe3/Kyoci-Agent/internal/skill"
+	"github.com/metabbe3/Kyoci-Agent/internal/tool"
+
+	developerpkg "github.com/metabbe3/Kyoci-Agent/internal/role/developer"
+	srepkg "github.com/metabbe3/Kyoci-Agent/internal/role/sre"
+	qapkg "github.com/metabbe3/Kyoci-Agent/internal/role/qa"
+	pmpkg "github.com/metabbe3/Kyoci-Agent/internal/role/pm"
+	frontendpkg "github.com/metabbe3/Kyoci-Agent/internal/role/frontend"
+)
+
+// =============================================================================
+// Role Registry
+// =============================================================================
+
+// RoleRegistry manages role configurations and creates role agents on demand.
+// It is thread-safe and uses internal synchronization (RWMutex).
+type RoleRegistry struct {
+	roles      map[kyoci.RoleType]*RoleAgent
+	router     *llm.Router
+	toolReg    *tool.Registry
+	skillReg   *skill.Registry
+	memoryMgr  kyoci.MemoryStore
+	thinkingCfg config.ThinkingConfig
+	orchCfg     config.OrchestrationConfig
+	mu         sync.RWMutex
+	logger     *slog.Logger
+}
+
+// NewRoleRegistry creates a new role registry with the required dependencies.
+// The thinking config is initialized with sensible defaults so that agents
+// created without calling RegisterDefaults still have valid thinking budgets.
+func NewRoleRegistry(
+	router *llm.Router,
+	toolReg *tool.Registry,
+	skillReg *skill.Registry,
+	memoryMgr kyoci.MemoryStore,
+) *RoleRegistry {
+	return &RoleRegistry{
+		roles:     make(map[kyoci.RoleType]*RoleAgent),
+		router:    router,
+		toolReg:   toolReg,
+		skillReg:  skillReg,
+		memoryMgr: memoryMgr,
+		thinkingCfg: config.ThinkingConfig{
+			Enabled:             false,
+			ToolBudget:          15,
+			MaxReflections:      3,
+			MaxReplans:          2,
+			ConfidenceThreshold: 0.7,
+			FewShot:             true,
+		},
+		orchCfg: config.OrchestrationConfig{
+			Enabled:             false,
+			MaxSteps:            6,
+			MaxParallel:         3,
+			WorkerMaxIterations: 8,
+			WorkerMaxToolCalls:  8,
+		},
+		logger: slog.Default(),
+	}
+}
+
+// Register creates and registers a role agent from the given configuration.
+// If a role of the same type already exists, it will be replaced.
+//
+// Parameters:
+//   - cfg: The role configuration to register
+//
+// Returns:
+//   - error: nil on success, error if registration or agent creation fails
+func (r *RoleRegistry) Register(cfg kyoci.RoleConfig) error {
+	if err := cfg.Validate(); err != nil {
+		r.logger.Error("role config validation failed", "type", cfg.Type, "error", err)
+		return fmt.Errorf("invalid role config for type %s: %w", cfg.Type, err)
+	}
+
+	// Create agent config from role config + registry thinking config.
+	// thinkingCfg is sourced from *config.Config via RegisterDefaults, or
+	// falls back to the NewRoleRegistry defaults when Register is called
+	// directly (e.g., in tests or programmatic usage).
+	agentCfg := agent.AgentConfig{
+		SystemPrompt:                 cfg.SystemPrompt,
+		ToolChoice:                   "auto",
+		Temperature:                  cfg.Temperature,
+		MaxTokens:                    8192,
+		PreferredProvider:            cfg.PreferredProvider,
+		Model:                        cfg.Model,
+		EnableSkills:                 true,
+		EnableMemory:                 true,
+		EnableStreaming:              true,
+		EnableThinking:               r.thinkingCfg.Enabled,
+		ThinkingToolBudget:           r.thinkingCfg.ToolBudget,
+		ThinkingMaxReflections:       r.thinkingCfg.MaxReflections,
+		ThinkingMaxReplans:           r.thinkingCfg.MaxReplans,
+		ThinkingConfidenceThreshold:  r.thinkingCfg.ConfidenceThreshold,
+		ThinkingFewShot:              r.thinkingCfg.FewShot,
+		Orchestration: agent.OrchestratorConfig{
+			Enabled:             r.orchCfg.Enabled,
+			MaxSteps:            r.orchCfg.MaxSteps,
+			MaxParallel:         r.orchCfg.MaxParallel,
+			WorkerMaxIterations: r.orchCfg.WorkerMaxIterations,
+			WorkerMaxToolCalls:  r.orchCfg.WorkerMaxToolCalls,
+		},
+	}
+
+	if cfg.MaxIterations > 0 {
+		agentCfg.MaxIterations = cfg.MaxIterations
+	}
+
+	// Create role agent
+	roleAgent, err := r.createRoleAgent(cfg, agentCfg)
+	if err != nil {
+		r.logger.Error("failed to create role agent", "type", cfg.Type, "error", err)
+		return fmt.Errorf("failed to create role agent for type %s: %w", cfg.Type, err)
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.roles[cfg.Type] = roleAgent
+	r.logger.Info("role registered", "type", cfg.Type, "tools", len(cfg.Tools))
+	return nil
+}
+
+// Get retrieves a registered role agent by type.
+//
+// Parameters:
+//   - roleType: The role type to retrieve
+//
+// Returns:
+//   - *RoleAgent: The role agent if found
+//   - error: kyoci.ErrRoleNotFound if not registered
+func (r *RoleRegistry) Get(roleType kyoci.RoleType) (*RoleAgent, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	roleAgent, ok := r.roles[roleType]
+	if !ok {
+		return nil, kyoci.ErrRoleNotFound
+	}
+	return roleAgent, nil
+}
+
+// List returns all registered role configurations.
+//
+// Returns:
+//   - []kyoci.RoleConfig: List of role configurations
+func (r *RoleRegistry) List() []kyoci.RoleConfig {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	configs := make([]kyoci.RoleConfig, 0, len(r.roles))
+	for _, roleAgent := range r.roles {
+		configs = append(configs, roleAgent.config)
+	}
+	return configs
+}
+
+// RegisterDefaults registers all configured default roles from the config package.
+// This typically includes developer, sre, qa, and pm roles.
+//
+// Parameters:
+//   - cfg: The application config (may contain role overrides)
+//
+// Returns:
+//   - error: nil on success, error if any default role fails to register
+func (r *RoleRegistry) RegisterDefaults(cfg *config.Config) error {
+	r.logger.Info("registering default roles")
+
+	// Capture thinking config so that subsequent Register() calls propagate
+	// it into each role agent's AgentConfig. When cfg is nil we keep the
+	// NewRoleRegistry defaults (thinking disabled, sane budgets).
+	if cfg != nil {
+		r.thinkingCfg = cfg.Agent.Thinking
+		r.orchCfg = cfg.Agent.Orchestration
+	}
+
+	// Import role-specific default configs
+	defaultConfigs := map[kyoci.RoleType]kyoci.RoleConfig{
+		kyoci.RoleDeveloper: developerpkg.DefaultConfig(),
+		kyoci.RoleSRE:       srepkg.DefaultConfig(),
+		kyoci.RoleQA:        qapkg.DefaultConfig(),
+		kyoci.RolePM:        pmpkg.DefaultConfig(),
+		kyoci.RoleFrontend:  frontendpkg.DefaultConfig(),
+	}
+
+	// If config package has role defaults, use those
+	if cfg != nil && cfg.Roles != nil {
+		for roleName := range cfg.Roles {
+			var roleType kyoci.RoleType
+			switch roleName {
+			case "developer":
+				roleType = kyoci.RoleDeveloper
+			case "sre":
+				roleType = kyoci.RoleSRE
+			case "qa":
+				roleType = kyoci.RoleQA
+			case "pm":
+				roleType = kyoci.RolePM
+			case "frontend":
+				roleType = kyoci.RoleFrontend
+			default:
+				r.logger.Warn("unknown role name in defaults, skipping", "name", roleName)
+				continue
+			}
+
+			// Override default with config (map value is already a pointer)
+			roleConfig := cfg.Roles[roleName]
+			defaultConfigs[roleType] = kyoci.RoleConfig{
+				Type:              roleType,
+				SystemPrompt:      roleConfig.GetSystemPrompt(),
+				Tools:             roleConfig.GetTools(),
+				PreferredProvider: roleConfig.GetPreferredProvider(),
+				MaxIterations:     roleConfig.GetMaxIterations(),
+				Temperature:       0.3,
+				Model:             roleConfig.GetModel(),
+			}
+		}
+	}
+
+	// Register all default roles
+	for roleType, roleConfig := range defaultConfigs {
+		if err := r.Register(roleConfig); err != nil {
+			r.logger.Error("failed to register default role", "type", roleType, "error", err)
+			return fmt.Errorf("failed to register default role %s: %w", roleType, err)
+		}
+	}
+
+	r.logger.Info("default roles registered", "count", len(defaultConfigs))
+	return nil
+}
+
+// SetIntelligenceHooks wires context injector and task recorder into all
+// registered role agents. Called by the orchestrator after all roles are created.
+func (r *RoleRegistry) SetIntelligenceHooks(injector agent.ContextInjector, recorder agent.TaskRecorder) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	for _, roleAgent := range r.roles {
+		if injector != nil {
+			roleAgent.SetContextInjector(injector)
+		}
+		if recorder != nil {
+			roleAgent.SetTaskRecorder(recorder)
+		}
+	}
+	r.logger.Info("intelligence hooks wired into all roles")
+}
+
+// createRoleAgent creates a new RoleAgent with the given configuration.
+func (r *RoleRegistry) createRoleAgent(
+	cfg kyoci.RoleConfig,
+	agentCfg agent.AgentConfig,
+) (*RoleAgent, error) {
+	// Create the underlying agent with kyoci.ToolRegistry for proper integration
+	// IMPORTANT: Only register tools that are listed in the role's Tools config.
+	// This prevents a frontend agent from accidentally using security_scan, etc.
+	toolRegistry := kyoci.NewToolRegistry()
+	if r.toolReg != nil {
+		// Build a set of allowed tool names for O(1) lookup
+		allowedTools := make(map[string]bool, len(cfg.Tools))
+		for _, name := range cfg.Tools {
+			allowedTools[name] = true
+		}
+
+		toolDefs := r.toolReg.List()
+		for _, def := range toolDefs {
+			// Built-in tools respect the role's allowlist (so a frontend
+			// agent cannot reach security_scan, etc.). Non-built-in tools
+			// (MCP / dynamically loaded) bypass the allowlist — they are
+			// user-installed extensions that should be available to any
+			// role, and their names cannot be known ahead of time to be
+			// listed in role config. Without this bypass, MCP tools are
+			// silently dropped and never reach the orchestrated worker.
+			if len(allowedTools) > 0 && !allowedTools[def.Name] && tool.IsBuiltinName(def.Name) {
+				continue
+			}
+			t, err := r.toolReg.Get(def.Name)
+			if err != nil {
+				r.logger.Warn("failed to get tool from registry", "name", def.Name, "error", err)
+				continue
+			}
+			if err := toolRegistry.Register(t); err != nil {
+				r.logger.Warn("failed to register tool", "name", def.Name, "error", err)
+			}
+		}
+		r.logger.Info("role tool filtering applied",
+			"role", cfg.Type,
+			"total_tools_available", len(toolDefs),
+			"tools_registered", toolRegistry.Count(),
+		)
+	}
+
+	skillRegistry := kyoci.NewSkillRegistry()
+	if r.skillReg != nil {
+		skillInfos := r.skillReg.List()
+		for _, info := range skillInfos {
+			// Note: We can't get the actual skill from info, so we'd need to extend the skill API
+			// For now, skills will need to be registered separately
+			r.logger.Debug("skill available", "name", info.Name)
+		}
+	}
+
+	// Create agent
+	agt := agent.NewAgent(
+		agentCfg,
+		r.router,
+		toolRegistry,
+		skillRegistry,
+		r.memoryMgr,
+	)
+
+	return &RoleAgent{
+		config: cfg,
+		agent:  agt,
+	}, nil
+}
+
+// =============================================================================
+// Role Agent
+// =============================================================================
+
+// RoleAgent wraps an agent with role-specific configuration and behavior.
+// It implements the kyoci.Role interface and delegates to the underlying agent.
+// Goroutine-safe: All methods are safe for concurrent use.
+type RoleAgent struct {
+	config kyoci.RoleConfig
+	agent  *agent.Agent
+	logger *slog.Logger
+}
+
+// Type returns the role type.
+func (ra *RoleAgent) Type() kyoci.RoleType {
+	return ra.config.Type
+}
+
+// SystemPrompt returns the role's system prompt.
+func (ra *RoleAgent) SystemPrompt() string {
+	return ra.config.SystemPrompt
+}
+
+// Tools returns the list of tool names this role can use.
+func (ra *RoleAgent) Tools() []string {
+	return ra.config.Tools
+}
+
+// PreferredProvider returns the preferred LLM provider name.
+func (ra *RoleAgent) PreferredProvider() string {
+	return ra.config.PreferredProvider
+}
+
+// MaxIterations returns the maximum number of iterations.
+func (ra *RoleAgent) MaxIterations() int {
+	return ra.config.MaxIterations
+}
+
+// Execute executes a task through this role.
+// Delegates to the underlying agent's Execute method.
+//
+// Parameters:
+//   - ctx: Context for cancellation and timeout control
+//   - task: The task description to execute
+//   - memory: The memory store for context and recall
+//
+// Returns:
+//   - *kyoci.TaskResult: The result of task execution
+//   - error: Any error that occurred
+func (ra *RoleAgent) Execute(ctx context.Context, task string, memory kyoci.MemoryStore) (*kyoci.TaskResult, error) {
+	if ra.logger == nil {
+		ra.logger = slog.Default()
+	}
+
+	ra.logger.Info("role agent executing task", "role", ra.Type(), "task", task)
+	return ra.agent.Execute(ctx, task)
+}
+
+// ExecuteStream executes a task through this role with streaming.
+// Delegates to the underlying agent's ExecuteStream method.
+//
+// Parameters:
+//   - ctx: Context for cancellation and timeout control
+//   - task: The task description to execute
+//
+// Returns:
+//   - <-chan kyoci.StreamChunk: Channel of streaming chunks
+//   - error: Any error that occurred
+func (ra *RoleAgent) ExecuteStream(ctx context.Context, task string) (<-chan kyoci.StreamChunk, error) {
+	if ra.logger == nil {
+		ra.logger = slog.Default()
+	}
+
+	ra.logger.Info("role agent executing stream task", "role", ra.Type(), "task", task)
+	return ra.agent.ExecuteStream(ctx, task)
+}
+
+// SetContextInjector sets the L3 context injector on the underlying agent.
+func (ra *RoleAgent) SetContextInjector(injector agent.ContextInjector) {
+	ra.agent.SetContextInjector(injector)
+}
+
+// SetTaskRecorder sets the experience recorder on the underlying agent.
+func (ra *RoleAgent) SetTaskRecorder(recorder agent.TaskRecorder) {
+	ra.agent.SetTaskRecorder(recorder)
+}

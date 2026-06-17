@@ -1,0 +1,427 @@
+package builtin
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/metabbe3/Kyoci-Agent/pkg"
+)
+
+// FileTool implements the kyoci.Tool interface for file operations.
+type FileTool struct {
+	logger      *slog.Logger
+	allowedDirs []string
+}
+
+// NewFileTool creates a new file tool instance.
+func NewFileTool() *FileTool {
+	// Default to allowing current directory and user home
+	homeDir, _ := os.UserHomeDir()
+	return &FileTool{
+		logger:      slog.Default(),
+		allowedDirs: []string{".", homeDir},
+	}
+}
+
+// Name returns the tool name.
+func (f *FileTool) Name() string {
+	return "file"
+}
+
+// Description returns the tool description.
+func (f *FileTool) Description() string {
+	return "Perform file operations including read, write, append, exists, list directory, and search. Path validation restricts access to allowed directories."
+}
+
+// Parameters returns the tool parameter definition.
+func (f *FileTool) Parameters() []kyoci.ToolParameter {
+	return []kyoci.ToolParameter{
+		{
+			Name:        "operation",
+			Type:        "string",
+			Description: "Operation to perform: read, write, edit, append, exists, list, search",
+			Required:    true,
+			EnumValues:  []string{"read", "write", "edit", "append", "exists", "list", "search"},
+		},
+		{
+			Name:        "path",
+			Type:        "string",
+			Description: "Absolute file or directory path. Tilde (~) expands to your home directory. Examples: '/Users/$USER/Documents', '~/Documents'. Avoid relative paths like 'documents' or '/documents' — they often resolve to the wrong place.",
+			Required:    true,
+		},
+		{
+			Name:        "content",
+			Type:        "string",
+			Description: "Content to write or append (required for write/append operations)",
+			Required:    false,
+		},
+		{
+			Name:        "old_string",
+			Type:        "string",
+			Description: "Exact string to find in the file (required for edit operation). Must match exactly once for a safe replacement.",
+			Required:    false,
+		},
+		{
+			Name:        "new_string",
+			Type:        "string",
+			Description: "String to replace old_string with (required for edit operation). Set to empty string to delete old_string.",
+			Required:    false,
+		},
+		{
+			Name:        "pattern",
+			Type:        "string",
+			Description: "Pattern to search for (required for search operation)",
+			Required:    false,
+		},
+	}
+}
+
+// Execute performs file operations.
+//
+// Parameters:
+//   - ctx: Context for cancellation
+//   - params: Map containing "operation", "path", and optionally "content" or "pattern"
+//
+// Returns:
+//   - string: Result of the operation
+//   - error: Error if operation fails
+func (f *FileTool) Execute(ctx context.Context, params map[string]interface{}) (string, error) {
+	// Extract operation
+	operation, ok := params["operation"].(string)
+	if !ok || operation == "" {
+		return "", fmt.Errorf("operation parameter is required and must be a string")
+	}
+
+	// Extract path
+	path, ok := params["path"].(string)
+	if !ok || path == "" {
+		return "", fmt.Errorf("path parameter is required and must be a string")
+	}
+
+	// Expand ~ and resolve to an absolute path BEFORE the allowed-dirs check,
+	// so the model's ~/Documents resolves to $HOME/Documents and passes the
+	// allow-check against the home directory. Without this the tilde is left
+	// literal and the call fails with an opaque "directory not found".
+	absPath, err := f.expandPath(path)
+	if err != nil {
+		return "", err
+	}
+
+	// Validate path
+	if !f.isPathAllowed(absPath) {
+		f.logger.Warn("path access denied", "path", absPath)
+		return "", fmt.Errorf("access denied: path outside allowed directories")
+	}
+
+	// Execute operation based on type
+	switch operation {
+	case "read":
+		return f.readFile(absPath)
+	case "write":
+		return f.writeFile(absPath, params)
+	case "edit":
+		return f.editFile(absPath, params)
+	case "append":
+		return f.appendFile(absPath, params)
+	case "exists":
+		return f.checkExists(absPath)
+	case "list":
+		return f.listDirectory(absPath)
+	case "search":
+		return f.searchFiles(absPath, params)
+	default:
+		return "", fmt.Errorf("unknown operation: %s", operation)
+	}
+}
+
+// expandPath normalizes a path argument from the LLM. It expands a leading ~
+// to the user's home directory, then calls filepath.Abs to resolve relative
+// paths against the agent's working directory and clean any ".." components.
+// Errors surface a clear message rather than silently producing a path that
+// won't exist.
+func (f *FileTool) expandPath(path string) (string, error) {
+	if path == "" {
+		return "", fmt.Errorf("path is required")
+	}
+	// Expand ~ to home dir. Models commonly try ~/Documents when they don't
+	// know the absolute home path; without this the call fails with an opaque
+	// "directory not found" error.
+	if strings.HasPrefix(path, "~") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("cannot resolve home directory: %w", err)
+		}
+		if path == "~" {
+			path = home
+		} else if strings.HasPrefix(path, "~/") {
+			path = filepath.Join(home, path[2:])
+		}
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("cannot resolve path %q: %w", path, err)
+	}
+	return abs, nil
+}
+
+// readFile reads the content of a file.
+func (f *FileTool) readFile(path string) (string, error) {
+	f.logger.Info("reading file", "path", path)
+
+	content, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			home, _ := os.UserHomeDir()
+			return "", fmt.Errorf(
+				"file not found: %s. Hint: your home directory is %s. "+
+					"Try file read %s/<filename> or file list ~ to see your home contents.",
+				path, home, home,
+			)
+		}
+		if os.IsPermission(err) {
+			return "", fmt.Errorf("permission denied: %s", path)
+		}
+		return "", fmt.Errorf("failed to read file: %w", err)
+	}
+
+	return string(content), nil
+}
+
+// writeFile writes content to a file, overwriting if it exists.
+func (f *FileTool) writeFile(path string, params map[string]interface{}) (string, error) {
+	content, ok := params["content"].(string)
+	if !ok {
+		return "", fmt.Errorf("content parameter is required for write operation")
+	}
+
+	f.logger.Info("writing file", "path", path)
+
+	// Create parent directories if needed
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return "", fmt.Errorf("failed to create directories: %w", err)
+	}
+
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		if os.IsPermission(err) {
+			return "", fmt.Errorf("permission denied: %s", path)
+		}
+		return "", fmt.Errorf("failed to write file: %w", err)
+	}
+
+	return fmt.Sprintf("Successfully wrote %d bytes to %s", len(content), path), nil
+}
+
+// editFile replaces the first occurrence of old_string with new_string in a file.
+// It errors if old_string is empty or not found, mirroring the semantics of a
+// safe find-and-replace: the model must name exactly what it wants to change.
+func (f *FileTool) editFile(path string, params map[string]interface{}) (string, error) {
+	oldStr, ok := params["old_string"].(string)
+	if !ok || oldStr == "" {
+		return "", fmt.Errorf("old_string parameter is required for edit operation")
+	}
+	newStr, _ := params["new_string"].(string)
+
+	f.logger.Info("editing file", "path", path, "old_len", len(oldStr), "new_len", len(newStr))
+
+	content, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("file not found: %s", path)
+		}
+		if os.IsPermission(err) {
+			return "", fmt.Errorf("permission denied: %s", path)
+		}
+		return "", fmt.Errorf("failed to read file: %w", err)
+	}
+
+	if !strings.Contains(string(content), oldStr) {
+		return "", fmt.Errorf("old_string not found in %s", path)
+	}
+
+	newContent := strings.Replace(string(content), oldStr, newStr, 1)
+	if err := os.WriteFile(path, []byte(newContent), 0644); err != nil {
+		if os.IsPermission(err) {
+			return "", fmt.Errorf("permission denied: %s", path)
+		}
+		return "", fmt.Errorf("failed to write file: %w", err)
+	}
+
+	return fmt.Sprintf("Successfully edited %s (%d → %d bytes)", path, len(content), len(newContent)), nil
+}
+
+// appendFile appends content to a file.
+func (f *FileTool) appendFile(path string, params map[string]interface{}) (string, error) {
+	content, ok := params["content"].(string)
+	if !ok {
+		return "", fmt.Errorf("content parameter is required for append operation")
+	}
+
+	f.logger.Info("appending to file", "path", path)
+
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		if os.IsPermission(err) {
+			return "", fmt.Errorf("permission denied: %s", path)
+		}
+		return "", fmt.Errorf("failed to open file: %w", err)
+	}
+	defer file.Close()
+
+	if _, err := file.WriteString(content); err != nil {
+		return "", fmt.Errorf("failed to append to file: %w", err)
+	}
+
+	return fmt.Sprintf("Successfully appended %d bytes to %s", len(content), path), nil
+}
+
+// checkExists checks if a file or directory exists.
+func (f *FileTool) checkExists(path string) (string, error) {
+	f.logger.Info("checking if path exists", "path", path)
+
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Sprintf("Path does not exist: %s", path), nil
+		}
+		return "", fmt.Errorf("failed to check path: %w", err)
+	}
+
+	fileType := "file"
+	if info.IsDir() {
+		fileType = "directory"
+	}
+
+	return fmt.Sprintf("Path exists: %s (type: %s, size: %d bytes)", path, fileType, info.Size()), nil
+}
+
+// listDirectory lists the contents of a directory.
+func (f *FileTool) listDirectory(path string) (string, error) {
+	f.logger.Info("listing directory", "path", path)
+
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			home, _ := os.UserHomeDir()
+			return "", fmt.Errorf(
+				"directory not found: %s. Hint: your home directory is %s. "+
+					"Try file list %s/Documents or file list ~ to see your home contents.",
+				path, home, home,
+			)
+		}
+		if os.IsPermission(err) {
+			return "", fmt.Errorf("permission denied: %s", path)
+		}
+		return "", fmt.Errorf("failed to list directory: %w", err)
+	}
+
+	var builder strings.Builder
+	builder.WriteString(fmt.Sprintf("Contents of %s (%d entries):\n", path, len(entries)))
+	
+	for _, entry := range entries {
+		info, _ := entry.Info()
+		fileType := "FILE"
+		if entry.IsDir() {
+			fileType = "DIR "
+		}
+		builder.WriteString(fmt.Sprintf("  %s %s (%d bytes)\n", fileType, entry.Name(), info.Size()))
+	}
+
+	return builder.String(), nil
+}
+
+// searchFiles searches for files matching a pattern.
+func (f *FileTool) searchFiles(path string, params map[string]interface{}) (string, error) {
+	pattern, ok := params["pattern"].(string)
+	if !ok || pattern == "" {
+		return "", fmt.Errorf("pattern parameter is required for search operation")
+	}
+
+	f.logger.Info("searching files", "path", path, "pattern", pattern)
+
+	var results []string
+	
+	err := filepath.Walk(path, func(filePath string, info os.FileInfo, err error) error {
+		if err != nil {
+			// Skip files we can't access
+			return nil
+		}
+
+		// Search in file name
+		if strings.Contains(strings.ToLower(filepath.Base(filePath)), strings.ToLower(pattern)) {
+			fileType := "FILE"
+			if info.IsDir() {
+				fileType = "DIR "
+			}
+			results = append(results, fmt.Sprintf("%s %s", fileType, filePath))
+			return nil
+		}
+
+		// Search in file content (only for text files)
+		if !info.IsDir() && info.Size() < 1024*1024 { // Limit to 1MB files
+			if content, err := os.ReadFile(filePath); err == nil {
+				if strings.Contains(strings.ToLower(string(content)), strings.ToLower(pattern)) {
+					results = append(results, fmt.Sprintf("MATCH %s", filePath))
+				}
+			}
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		return "", fmt.Errorf("search failed: %w", err)
+	}
+
+	if len(results) == 0 {
+		return fmt.Sprintf("No results found for pattern '%s' in %s", pattern, path), nil
+	}
+
+	var builder strings.Builder
+	builder.WriteString(fmt.Sprintf("Found %d matches for pattern '%s':\n", len(results), pattern))
+	for _, result := range results {
+		builder.WriteString(fmt.Sprintf("  - %s\n", result))
+	}
+
+	return builder.String(), nil
+}
+
+// isPathAllowed checks if a path is within allowed directories.
+func (f *FileTool) isPathAllowed(path string) bool {
+	// Resolve to absolute path
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return false
+	}
+
+	// Check against each allowed directory
+	for _, allowedDir := range f.allowedDirs {
+		// Get absolute path of allowed directory
+		allowedAbs, err := filepath.Abs(allowedDir)
+		if err != nil {
+			continue
+		}
+
+		// Check if path starts with allowed directory
+		rel, err := filepath.Rel(allowedAbs, absPath)
+		if err != nil {
+			continue
+		}
+
+		// Check if the relative path doesn't go outside allowed directory
+		if !strings.HasPrefix(rel, "..") {
+			return true
+		}
+	}
+
+	return false
+}
+
+// SetAllowedDirs sets the list of allowed directories.
+func (f *FileTool) SetAllowedDirs(dirs []string) {
+	f.allowedDirs = dirs
+}

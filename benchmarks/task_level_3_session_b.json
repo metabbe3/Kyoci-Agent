@@ -1,0 +1,5 @@
+{
+  "task": "Working directory: app_test_env/. Initialize a new user profile service. Use the MCP tool to fetch the user schema, then generate main.go with the data models and a basic net/http handler. Follow the user's known coding preferences.",
+  "role": "developer",
+  "timeout": 360
+}

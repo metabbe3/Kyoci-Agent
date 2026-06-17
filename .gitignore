@@ -1,56 +1,66 @@
-# Binaries
+# =============================================================================
+# OS / editor cruft
+# =============================================================================
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/
+
+# =============================================================================
+# Binaries / build output
+# =============================================================================
 bin/
 *.exe
-
-# Build artifacts
-*.o
-*.a
+*.dll
 *.so
+*.dylib
+# Local Go binaries that have leaked into the repo root in past branches
+/kyoci-agent
+/grpc-server
+/grpc_client
+*.test
 
-# Data directories
+# =============================================================================
+# Runtime data (SQLite DBs, skill bundles, logs)
+# =============================================================================
 data/
 *.db
 *.db-journal
-*.db-wal
-*.db-shm
+*.sqlite
+*.sqlite3
 
-# Cache
-data/cache/
-*.cache
+# =============================================================================
+# Node.js (portfolio-site, tooling)
+# =============================================================================
+node_modules/
+package-lock.json
 
-# Config (keep template)
-config/local.yaml
-config/*.local.yaml
-
-# IDE
-.idea/
-.vscode/
-*.swp
-*.swo
-*~
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Logs
-*.log
-
-# Temp
-tmp/
-temp/
-
-# Plans
+# =============================================================================
+# Local-only / archive / unrelated worktrees
+# =============================================================================
 .hermes/
+_archive_v4/
+portfolio-site/
+test-projects/
 
-# WAL files
-data/wal/
+# =============================================================================
+# Benchmark runtime artifacts
+# =============================================================================
+agent_test_env/
+app_test_env/
+benchmarks/last_response.json
+benchmarks/last_response_level_2.json
+benchmarks/last_response_level_3_a.json
+benchmarks/last_response_level_3_b.json
+benchmarks/last_report.txt
+benchmarks/last_report_level_1.txt
+benchmarks/last_report_level_2.txt
+benchmarks/last_report_level_3.txt
+benchmarks/last_run_level_1.log
+benchmarks/last_run_level_2.log
+benchmarks/last_run_level_3.log
 
-# Memory backup
-*.bak
-bin/
-bin/
-api/knowledge.json
-ai-agent
-bin/
-kyoci-agent
+# L3 bench transient state
+/tmp/kyoci-l3-bench.db

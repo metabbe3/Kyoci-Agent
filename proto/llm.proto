@@ -1,0 +1,59 @@
+syntax = "proto3";
+
+package kyoci.v5;
+
+option go_package = "github.com/metabbe3/Kyoci-Agent/proto;kyociv5";
+
+import "common.proto";
+
+// ProviderType enumerates supported LLM providers
+enum ProviderType {
+  PROVIDER_TYPE_UNSPECIFIED = 0;
+  PROVIDER_TYPE_OPENAI = 1;
+  PROVIDER_TYPE_ANTHROPIC = 2;
+  PROVIDER_TYPE_OLLAMA = 3;
+  PROVIDER_TYPE_GEMINI = 4;
+  PROVIDER_TYPE_ZAI = 5;
+  PROVIDER_TYPE_GROQ = 6;
+  PROVIDER_TYPE_MISTRAL = 7;
+  PROVIDER_TYPE_DEEPSEEK = 8;
+  PROVIDER_TYPE_TOGETHER = 9;
+  PROVIDER_TYPE_FIREWORKS = 10;
+  PROVIDER_TYPE_XAI = 11;
+}
+
+// CompletionRequest represents a request to generate completions
+message CompletionRequest {
+  repeated Message messages = 1;
+  string model = 2;
+  double temperature = 3;
+  int32 max_tokens = 4;
+  bool stream = 5;
+  repeated ToolDefinition tools = 6;
+  Metadata metadata = 7;
+}
+
+// CompletionResponse represents the full completion response
+message CompletionResponse {
+  string content = 1;
+  string model = 2;
+  TokenUsage usage = 3;
+  repeated ToolCall tool_calls = 4;
+  string finish_reason = 5;
+}
+
+// StreamChunk represents a chunk of streaming completion response
+message StreamChunk {
+  string content_delta = 1;
+  string finish_reason = 2;
+  TokenUsage usage = 3;
+}
+
+// ModelInfo contains information about an available model
+message ModelInfo {
+  string id = 1;
+  ProviderType provider = 2;
+  int32 context_length = 3;
+  bool supports_tools = 4;
+  bool supports_streaming = 5;
+}

@@ -1,0 +1,85 @@
+# Kyoci Agent v5 — L3 Benchmark Configuration
+#
+# Isolated configuration for the Level 3 benchmark (memory + MCP + compaction).
+# Derived from default.yaml with these key differences:
+#   - Telegram DISABLED (no polling real users during bench)
+#   - Dedicated DB at /tmp/kyoci-l3-bench.db (isolated from production data)
+#   - MCP mock server wired (provides fetch_user_schema tool)
+#   - REST port 18080 (avoids colliding with the running :8080 agent)
+#   - Small short-term budget (500 tokens) so auto-compaction triggers mid-session
+
+server:
+  grpc_port: 50061
+  rest_port: 18080
+  tls_enabled: false
+  tls_cert: ""
+  tls_key: ""
+
+logging:
+  level: "info"
+  format: "json"
+
+memory:
+  db_path: "/tmp/kyoci-l3-bench.db"
+  compaction_threshold: 0.75
+  max_shortterm_tokens: 500  # small enough that a multi-step session triggers compaction
+
+pool:
+  workers: 4
+  queue_size: 100
+
+security:
+  auth_enabled: false
+  rate_limit: 100
+  tls_enabled: false
+
+# ── Telegram Gateway ───────────────────────────────────
+# DISABLED for benchmarks — we don't want the bench agent polling real users.
+telegram:
+  enabled: false
+  token: ""
+  allowed_users: ""
+  poll_timeout: 30
+
+# ── Webhook Gateway ────────────────────────────────────
+webhook:
+  enabled: true
+  secret: ""
+
+# ── MCP (Model Context Protocol) ───────────────────────
+# Mock server that exposes fetch_user_schema for Session B of the L3 benchmark.
+# The binary is built by run_level_3.sh before starting the bench agent.
+mcp:
+  servers:
+    user_schema:
+      enabled: true
+      command: "./bin/mcp-mock"
+      args: []
+
+# ── LLM Providers ──────────────────────────────────────
+# Same Ollama setup as default — the bench agent uses the same local model.
+providers:
+  ollama:
+    enabled: true
+    base_url: "http://192.168.2.1:11434/v1"
+    default_model: "gemma4:12b"
+    timeout: 300
+    max_retries: 2
+
+# ── Agent Execution Pipeline ──────────────────────────
+agent:
+  orchestration:
+    enabled: true
+    max_steps: 6
+    max_parallel: 3
+    worker_max_iterations: 8
+    worker_max_tool_calls: 8
+  thinking:
+    enabled: false
+
+# ── Prompt Skills ─────────────────────────────────────
+prompt_skills:
+  enabled: true
+  dir: "data/skills"
+  max_skills_per_task: 4
+  max_total_chars: 4000

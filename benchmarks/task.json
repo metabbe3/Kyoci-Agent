@@ -1,0 +1,5 @@
+{
+  "task": "Working directory: agent_test_env/ (a small Node.js project at the repo root). Scan the codebase, find where the database connection is hardcoded, refactor db/connection.js to use process.env.DATABASE_URL instead of the hardcoded URI, and create agent_test_env/.env.example with a DATABASE_URL= placeholder.",
+  "role": "developer",
+  "timeout": 360
+}

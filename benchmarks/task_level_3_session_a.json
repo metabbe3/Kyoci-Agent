@@ -1,0 +1,5 @@
+{
+  "task": "I am setting my global coding preferences. I only write backend APIs in Go using the standard net/http library (no frameworks like Gin or Fiber). My JSON struct tags must always use snake_case. Acknowledge and save this using the remember tool.",
+  "role": "developer",
+  "timeout": 120
+}

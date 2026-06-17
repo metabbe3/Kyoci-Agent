@@ -1,0 +1,157 @@
+# Kyoci Agent Test Configuration
+
+server:
+  grpc_port: 9000
+  rest_port: 9001
+  tls_enabled: true
+  tls_cert_file: /path/to/cert.pem
+  tls_key_file: /path/to/key.pem
+
+logging:
+  level: debug
+  format: text
+
+memory:
+  db_path: /custom/path/memory.db
+  compaction_threshold: 0.9
+  max_shortterm_tokens: 8000
+
+pool:
+  workers: 8
+  queue_size: 200
+
+security:
+  auth_enabled: true
+  rate_limit: 50
+  tls_enabled: true
+
+providers:
+  openai:
+    base_url: https://custom.openai.com/v1
+    api_key: sk-test123
+    default_model: gpt-5
+    max_retries: 5
+    timeout: 60s
+    enabled: true
+
+  anthropic:
+    base_url: https://api.anthropic.com/v1
+    api_key: sk-anthropic-test
+    default_model: claude-4-opus
+    max_retries: 3
+    timeout: 90s
+    enabled: true
+
+  ollama:
+    base_url: http://localhost:11434/v1
+    api_key: ""
+    default_model: codellama:latest
+    max_retries: 2
+    timeout: 120s
+    enabled: true
+
+  gemini:
+    base_url: https://generativelanguage.googleapis.com/v1beta/openai
+    api_key: test-gemini-key
+    default_model: gemini-2.5-pro-preview-05-21
+    max_retries: 3
+    timeout: 120s
+    enabled: false
+
+  zai:
+    base_url: https://open.bigmodel.cn/api/paas/v4
+    api_key: test-zai-key
+    default_model: glm-4.7
+    max_retries: 3
+    timeout: 120s
+    enabled: false
+
+  groq:
+    base_url: https://api.groq.com/openai/v1
+    api_key: test-groq-key
+    default_model: llama-3.3-70b-versatile
+    max_retries: 3
+    timeout: 120s
+    enabled: false
+
+  mistral:
+    base_url: https://api.mistral.ai/v1
+    api_key: test-mistral-key
+    default_model: codestral-latest
+    max_retries: 3
+    timeout: 120s
+    enabled: false
+
+  deepseek:
+    base_url: https://api.deepseek.com
+    api_key: test-deepseek-key
+    default_model: deepseek-coder
+    max_retries: 3
+    timeout: 120s
+    enabled: false
+
+  together:
+    base_url: https://api.together.ai/v1
+    api_key: test-together-key
+    default_model: meta-llama/Llama-3.3-70B-Instruct-Turbo-Free
+    max_retries: 3
+    timeout: 120s
+    enabled: false
+
+  fireworks:
+    base_url: https://api.fireworks.ai/inference/v1
+    api_key: test-fireworks-key
+    default_model: accounts/fireworks/models/llama-v3p3-70b-instruct
+    max_retries: 3
+    timeout: 120s
+    enabled: false
+
+  xai:
+    base_url: https://api.x.ai/v1
+    api_key: test-xai-key
+    default_model: grok-beta
+    max_retries: 3
+    timeout: 120s
+    enabled: false
+
+roles:
+  developer:
+    system_prompt: "Custom developer prompt for testing"
+    tools:
+      - write_file
+      - read_file
+      - patch
+      - terminal
+      - search_files
+    preferred_provider: anthropic
+    max_iterations: 20
+
+  sre:
+    system_prompt: "Custom SRE prompt for testing"
+    tools:
+      - terminal
+      - read_file
+      - write_file
+      - search_files
+    preferred_provider: openai
+    max_iterations: 15
+
+  qa:
+    system_prompt: "Custom QA prompt for testing"
+    tools:
+      - read_file
+      - search_files
+      - terminal
+      - write_file
+    preferred_provider: anthropic
+    max_iterations: 12
+
+  pm:
+    system_prompt: "Custom PM prompt for testing"
+    tools:
+      - write_file
+      - read_file
+      - terminal
+      - search_files
+    preferred_provider: openai
+    max_iterations: 8

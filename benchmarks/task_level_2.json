@@ -1,0 +1,5 @@
+{
+  "task": "Working directory: app_test_env/ (a small Node.js project at the repo root). Read server.js. This code is a mess. Refactor it using Node.js API best practices by splitting it into a clean layered architecture. Create a routes/userRoutes.js, a controllers/userController.js, and extract the data array into a services/userService.js. Update server.js so it only imports the routes and starts the server. Finally, write a brief README.md explaining the new architecture.",
+  "role": "developer",
+  "timeout": 360
+}
