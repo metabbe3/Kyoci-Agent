@@ -43,11 +43,35 @@ type simpleHashSkill struct {
 }
 
 func (s *simpleHashSkill) Execute(_ context.Context, q string) (string, error) {
-	t := quoteStripped(extractPayload(q))
+	t := stripHashVerb(q, s.Name())
+	t = quoteStripped(t)
 	if t == "" {
 		return "", fmt.Errorf("no text to hash")
 	}
 	return s.hashFn([]byte(t)), nil
+}
+
+// stripHashVerb removes the hash-command prefix from a query. The user's
+// query is typically "md5 of hello", "sha256: hello", "compute crc32 foo".
+// extractPayload doesn't strip these names because they're not in its
+// stopword list, so we do it here per-skill using the skill's own Name().
+func stripHashVerb(q, verb string) string {
+	low := strings.ToLower(q)
+	// Find the verb (e.g. "md5") and skip past it + optional "of/for/:" prefix.
+	idx := strings.Index(low, strings.ToLower(verb))
+	if idx < 0 {
+		return strings.TrimSpace(q)
+	}
+	rest := q[idx+len(verb):]
+	// Skip a colon or " of " / " for " after the verb.
+	rest = strings.TrimLeft(rest, ": \t")
+	for _, p := range []string{"of ", "for ", "this ", "the "} {
+		if strings.HasPrefix(strings.ToLower(rest), p) {
+			rest = rest[len(p):]
+			break
+		}
+	}
+	return strings.TrimSpace(rest)
 }
 
 func NewMD5Skill() *simpleHashSkill {
@@ -115,9 +139,10 @@ func (s *simpleHashSkill) MatchSHA3(q string) bool {
 	return strings.Contains(q, "sha3 ") || strings.Contains(q, "sha3-256") || strings.Contains(q, "sha3 hash") || strings.Contains(q, "keccak")
 }
 
-// Override Match() on simpleHashSkill — since each variant has its own Match
-// helper above, we patch the dispatcher here. The constructor list at the end
-// of this file overrides Match on each instance by wrapping it.
+// Override Match() on simpleHashSkill — dispatches to the per-variant helper
+// for SHA-family (which has tight per-name patterns), and falls back to
+// BaseSkill.Match for CRC variants (whose keywords "crc32" / "crc64" are
+// already unambiguous substring matches).
 func (s *simpleHashSkill) Match(q string) bool {
 	switch s.Name() {
 	case "md5":
@@ -131,7 +156,8 @@ func (s *simpleHashSkill) Match(q string) bool {
 	case "sha3_256":
 		return s.MatchSHA3(q)
 	}
-	return false
+	// CRC variants — defer to the BaseSkill keyword matcher.
+	return s.BaseSkill.Match(q)
 }
 
 // ---- CRC ----
@@ -186,11 +212,37 @@ func (s *HMACSkill) Match(q string) bool {
 	return strings.Contains(q, "hmac-sha512") || strings.Contains(q, "hmac sha512") || strings.Contains(q, "hmac_sha512")
 }
 func (s *HMACSkill) Execute(_ context.Context, q string) (string, error) {
-	payload := quoteStripped(extractPayload(q))
-	key, msg, ok := splitKeyMessage(payload)
-	if !ok {
+	// extractPayload splits at the first ':' but we want the FULL "key:message"
+	// pair after the verb. Operate on the full query.
+	low := strings.ToLower(q)
+	verb := "sha256 "
+	if s.bits == 512 {
+		verb = "sha512 "
+	}
+	verbEnd := strings.Index(low, verb)
+	if verbEnd < 0 {
+		// Fall back to looking for "hmac" then the next space.
+		verbEnd = strings.Index(low, "hmac")
+		if verbEnd < 0 {
+			return "", fmt.Errorf("expected 'hmac-%s key:message'", strings.Trim(verb, " "))
+		}
+		// Skip "hmac-<verb>" plus one space.
+		rest := q[verbEnd:]
+		spaceIdx := strings.Index(rest, " ")
+		if spaceIdx < 0 {
+			return "", fmt.Errorf("expected 'hmac-%s key:message'", strings.Trim(verb, " "))
+		}
+		verbEnd = verbEnd + spaceIdx + 1
+	} else {
+		verbEnd = verbEnd + len(verb)
+	}
+	rest := strings.TrimSpace(q[verbEnd:])
+	idx := strings.Index(rest, ":")
+	if idx <= 0 {
 		return "", fmt.Errorf("expected 'key:message' format")
 	}
+	key := strings.TrimSpace(rest[:idx])
+	msg := strings.TrimSpace(rest[idx+1:])
 	var mac hash.Hash
 	if s.bits == 256 {
 		mac = hmac.New(sha256.New, []byte(key))
@@ -252,11 +304,20 @@ func (s *BcryptVerifySkill) Match(q string) bool {
 		strings.Contains(q, "check bcrypt")
 }
 func (s *BcryptVerifySkill) Execute(_ context.Context, q string) (string, error) {
-	payload := quoteStripped(extractPayload(q))
-	pw, hash, ok := splitKeyMessage(payload)
-	if !ok {
+	// extractPayload splits at the first ':' but the bcrypt hash may contain
+	// no ':' itself, so the password gets dropped. Operate on the full query.
+	low := strings.ToLower(q)
+	verbEnd := strings.Index(low, "verify ")
+	if verbEnd < 0 {
+		return "", fmt.Errorf("expected 'bcrypt verify password:hash'")
+	}
+	rest := strings.TrimSpace(q[verbEnd+len("verify "):])
+	idx := strings.Index(rest, ":")
+	if idx <= 0 {
 		return "", fmt.Errorf("expected 'password:hash' format")
 	}
+	pw := strings.TrimSpace(rest[:idx])
+	hash := strings.TrimSpace(rest[idx+1:])
 	if err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(pw)); err != nil {
 		return "mismatch", nil
 	}
@@ -279,10 +340,24 @@ func (s *AESEncryptSkill) Match(q string) bool {
 		strings.Contains(q, "encrypt with aes") || strings.Contains(q, "aes-encrypt")
 }
 func (s *AESEncryptSkill) Execute(_ context.Context, q string) (string, error) {
-	payload := quoteStripped(extractPayload(q))
-	passkey, plaintext, ok := splitKeyMessage(payload)
-	if !ok {
+	// extractPayload splits at the first ':' which is INSIDE the
+	// "passkey:plaintext" payload. Operate on the full query and find the
+	// split colon ourselves (skipping the leading "aes encrypt " verb).
+	low := strings.ToLower(q)
+	verbEnd := strings.Index(low, "encrypt ")
+	if verbEnd < 0 {
+		return "", fmt.Errorf("expected 'aes encrypt passkey:plaintext'")
+	}
+	rest := strings.TrimSpace(q[verbEnd+len("encrypt "):])
+	// Find the first ':' — that separates the passkey from the plaintext.
+	idx := strings.Index(rest, ":")
+	if idx <= 0 {
 		return "", fmt.Errorf("expected 'passkey:plaintext' format")
+	}
+	passkey := strings.TrimSpace(rest[:idx])
+	plaintext := strings.TrimSpace(rest[idx+1:])
+	if plaintext == "" {
+		return "", fmt.Errorf("plaintext is empty")
 	}
 	salt := make([]byte, 16)
 	if _, err := rand.Read(salt); err != nil {
@@ -322,11 +397,20 @@ func (s *AESDecryptSkill) Match(q string) bool {
 		strings.Contains(q, "decrypt with aes")
 }
 func (s *AESDecryptSkill) Execute(_ context.Context, q string) (string, error) {
-	payload := quoteStripped(extractPayload(q))
-	passkey, hexCombined, ok := splitKeyMessage(payload)
-	if !ok {
+	// Same extractPayload workaround as AESEncryptSkill — operate on the full
+	// query, find the split colon after the verb.
+	low := strings.ToLower(q)
+	verbEnd := strings.Index(low, "decrypt ")
+	if verbEnd < 0 {
+		return "", fmt.Errorf("expected 'aes decrypt passkey:hex'")
+	}
+	rest := strings.TrimSpace(q[verbEnd+len("decrypt "):])
+	idx := strings.Index(rest, ":")
+	if idx <= 0 {
 		return "", fmt.Errorf("expected 'passkey:hex' format")
 	}
+	passkey := strings.TrimSpace(rest[:idx])
+	hexCombined := strings.TrimSpace(rest[idx+1:])
 	combined, err := hex.DecodeString(strings.TrimSpace(hexCombined))
 	if err != nil {
 		return "", fmt.Errorf("invalid hex: %w", err)

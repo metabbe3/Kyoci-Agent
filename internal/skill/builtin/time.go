@@ -26,12 +26,38 @@ func NewTimeSkill() *TimeSkill {
 }
 
 // Match checks if the query is asking for time information.
+//
+// Defers to the specific time skills (now, time_parse, time_format, time_diff,
+// cron_next, epoch_convert) when their patterns would fire. The legacy `time`
+// skill catches generic "what time" / "current date" / "unix timestamp"
+// phrasings that no specific skill claims.
 func (s *TimeSkill) Match(query string) bool {
 	queryLower := strings.ToLower(query)
+	// Defer to specific skills.
+	deferPhrases := []string{
+		"what time is it now", "what is the time", "current time in",
+		"parse time", "parse date", "time parse",
+		"format time", "format date", "time format",
+		"time diff", "time difference", "duration between", "elapsed between",
+		"cron next", "next cron", "cron_next",
+		"epoch convert", "convert epoch", "epoch to", "to epoch",
+		"unix to iso", "iso to unix",
+	}
+	for _, p := range deferPhrases {
+		if strings.Contains(queryLower, p) {
+			return false
+		}
+	}
+	// Bare "now" — defer to NowSkill.
+	if queryLower == "now" {
+		return false
+	}
+	// Note: "date" as a substring false-positives inside "validate", "candidate",
+	// "update", etc. Use word-bounded phrases instead.
 	timeKeywords := []string{
-		"time", "current time", "what time", "clock",
-		"date", "current date", "today", "what date",
-		"unix timestamp", "timestamp", "epoch",
+		"current time", "what time", "clock", "current date",
+		"what date", "today", "unix timestamp", "timestamp", "epoch",
+		" time", "the time", "this time",
 	}
 	for _, keyword := range timeKeywords {
 		if strings.Contains(queryLower, keyword) {

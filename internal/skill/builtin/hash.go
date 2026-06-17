@@ -33,8 +33,28 @@ func NewHashSkill() *HashSkill {
 }
 
 // Match checks if the query is asking for a hash.
+//
+// Defers to the specific hash skills (md5, sha1, sha256, sha512, sha3_256,
+// crc32, crc64, hmac_*, bcrypt_*, aes_*, hash_identify) when their tighter
+// patterns would fire. This old `hash` skill catches only the generic "hash
+// this" / "hash of" phrasings that the specific skills don't claim.
 func (s *HashSkill) Match(query string) bool {
 	queryLower := strings.ToLower(query)
+	// Defer to specific skills.
+	specificTriggers := []string{
+		"md5 ", "md5:", "sha1 ", "sha1:", "sha256 ", "sha256:", "sha512 ", "sha512:",
+		"sha3 ", "sha3:", "sha3-256", "keccak",
+		"crc32", "crc-32", "crc 32", "crc64", "crc-64", "crc 64",
+		"hmac-sha256", "hmac-sha512", "hmac sha", "hmac_sha",
+		"bcrypt hash", "bcrypt verify", "bcrypt:",
+		"aes encrypt", "aes decrypt", "encrypt aes", "decrypt aes",
+		"identify hash", "what hash", "hash type", "kind of hash",
+	}
+	for _, p := range specificTriggers {
+		if strings.Contains(queryLower, p) {
+			return false
+		}
+	}
 	for _, keyword := range []string{"hash", "md5", "sha1", "sha256"} {
 		if strings.Contains(queryLower, keyword) {
 			return true

@@ -171,16 +171,19 @@ func NewContrastRatioSkill() *ContrastRatioSkill {
 func (s *ContrastRatioSkill) Match(q string) bool {
 	q = strings.ToLower(q)
 	return strings.Contains(q, "contrast ratio") || strings.Contains(q, "contrast between") ||
-		strings.Contains(q, "wcag contrast")
+		strings.Contains(q, "wcag contrast") || strings.HasPrefix(q, "contrast ")
 }
 func (s *ContrastRatioSkill) Execute(_ context.Context, q string) (string, error) {
-	payload := extractPayload(q)
-	parts := strings.Fields(payload)
-	if len(parts) < 2 {
+	// Pull hex/rgb colors via regex — extractPayload doesn't reliably separate
+	// them from natural-language queries like "contrast between #fff #000".
+	hexes := hexColorRe.FindAllString(q, -1)
+	rgbs := rgbTupleRe.FindAllString(q, -1)
+	colors := append(hexes, rgbs...)
+	if len(colors) < 2 {
 		return "", fmt.Errorf("expected two colors, e.g. 'contrast #fff #000'")
 	}
-	l1, ok1 := relativeLuminance(parts[0])
-	l2, ok2 := relativeLuminance(parts[1])
+	l1, ok1 := relativeLuminance(colors[0])
+	l2, ok2 := relativeLuminance(colors[1])
 	if !ok1 || !ok2 {
 		return "", fmt.Errorf("could not parse one of the colors")
 	}
@@ -255,26 +258,27 @@ func NewColorBlendSkill() *ColorBlendSkill {
 func (s *ColorBlendSkill) Match(q string) bool {
 	q = strings.ToLower(q)
 	return strings.Contains(q, "color blend") || strings.Contains(q, "blend colors") ||
-		strings.Contains(q, "mix colors") || strings.Contains(q, "blend two colors")
+		strings.Contains(q, "mix colors") || strings.Contains(q, "blend two colors") ||
+		strings.HasPrefix(q, "blend ")
 }
 func (s *ColorBlendSkill) Execute(_ context.Context, q string) (string, error) {
-	payload := extractPayload(q)
-	parts := strings.Fields(payload)
-	if len(parts) < 2 {
-		return "", fmt.Errorf("expected two colors and optional ratio, e.g. 'blend #fff #000 0.5'")
+	// Pull colors via regex — extractPayload doesn't reliably separate from
+	// the natural-language "blend #a #b 0.5" phrasing.
+	hexes := hexColorRe.FindAllString(q, -1)
+	rgbs := rgbTupleRe.FindAllString(q, -1)
+	colors := append(hexes, rgbs...)
+	if len(colors) < 2 {
+		return "", fmt.Errorf("expected two colors, e.g. 'blend #000 #fff 0.5'")
 	}
-	r1, g1, b1, ok1 := parseHexStrict(parts[0])
-	if !ok1 {
-		r1, g1, b1, _ = parseRGBStrict(parts[0])
-	}
-	r2, g2, b2, ok2 := parseHexStrict(parts[1])
-	if !ok2 {
-		r2, g2, b2, _ = parseRGBStrict(parts[1])
-	}
+	r1, g1, b1, _ := parseHexStrict(colors[0])
+	r2, g2, b2, _ := parseHexStrict(colors[1])
+	// Optional ratio: pull from the query via regex.
 	t := 0.5
-	if len(parts) >= 3 {
-		if v, err := strconv.ParseFloat(parts[2], 64); err == nil {
+	ratioRe := regexp.MustCompile(`\b0?\.\d+\b|\b[01]\.0\b|\b[01]\b`)
+	for _, m := range ratioRe.FindAllString(q, -1) {
+		if v, err := strconv.ParseFloat(m, 64); err == nil && v >= 0 && v <= 1 {
 			t = v
+			break
 		}
 	}
 	if t < 0 {

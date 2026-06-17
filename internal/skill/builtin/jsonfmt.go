@@ -27,8 +27,29 @@ func NewJSONFmtSkill() *JSONFmtSkill {
 }
 
 // Match checks if the query references JSON.
+//
+// Defers to the data-format skills (yaml_to_json, json_to_yaml, csv_to_json,
+// etc.) when their tighter patterns would fire. The legacy jsonfmt catches
+// generic "format this json" / "validate json" phrasings that no specific
+// datafmt skill claims.
 func (s *JSONFmtSkill) Match(query string) bool {
-	return strings.Contains(strings.ToLower(query), "json")
+	q := strings.ToLower(query)
+	// Defer to specific datafmt skills.
+	deferPhrases := []string{
+		"yaml to json", "json to yaml", "yaml → json", "json → yaml",
+		"toml to json", "json to toml", "toml → json", "json → toml",
+		"csv to json", "json to csv", "csv → json", "json → csv",
+		"xml to json", "json to xml", "xml → json", "json → xml",
+		"env to json", "json to env",
+		"json minify", "minify json", "compact json",
+		"json pretty", "pretty json", "beautify json",
+	}
+	for _, p := range deferPhrases {
+		if strings.Contains(q, p) {
+			return false
+		}
+	}
+	return strings.Contains(q, "json")
 }
 
 // Execute formats, minifies, or validates JSON found in the query.

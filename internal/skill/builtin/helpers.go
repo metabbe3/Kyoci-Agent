@@ -16,6 +16,25 @@ func nowUnixMillis() int64 {
 	return time.Now().UnixMilli()
 }
 
+// stripVerb removes the leading command verb from a query, returning the
+// operand. Works around extractPayload which splits at the first ':' — that
+// breaks for skills whose operand contains colons (ISO timestamps, ratios
+// like "12:8", URLs, etc.).
+//
+// Example: stripVerb("time diff 2024-01-01T00:00:00Z ...", "time diff")
+// returns "2024-01-01T00:00:00Z ...".
+//
+// The verb match is case-insensitive. If the verb is not found, returns the
+// query unchanged (callers should handle that case themselves).
+func stripVerb(q, verb string) string {
+	low := strings.ToLower(q)
+	idx := strings.Index(low, strings.ToLower(verb))
+	if idx < 0 {
+		return strings.TrimSpace(q)
+	}
+	return strings.TrimSpace(q[idx+len(verb):])
+}
+
 // =====================================================================================
 // Shared helpers for skill and tool implementations.
 //

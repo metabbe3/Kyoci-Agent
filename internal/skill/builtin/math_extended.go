@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -244,9 +245,16 @@ func (s *IsPrimeSkill) Match(q string) bool {
 		strings.Contains(q, "is_prime") || strings.Contains(q, "primality")
 }
 func (s *IsPrimeSkill) Execute(_ context.Context, q string) (string, error) {
-	n, err := strconv.Atoi(strings.TrimSpace(extractPayload(q)))
-	if err != nil {
+	// Pull the integer via regex — extractPayload leaves "is prime 17" as-is
+	// (no colon, no stopword match), which strconv.Atoi can't parse.
+	re := regexp.MustCompile(`-?\d+`)
+	m := re.FindString(q)
+	if m == "" {
 		return "", fmt.Errorf("invalid integer")
+	}
+	n, err := strconv.Atoi(m)
+	if err != nil {
+		return "", fmt.Errorf("invalid integer: %w", err)
 	}
 	if isPrime(n) {
 		return fmt.Sprintf("%d is prime", n), nil
@@ -286,7 +294,12 @@ func (s *PrimeFactorsSkill) Match(q string) bool {
 		strings.Contains(q, "factorize")
 }
 func (s *PrimeFactorsSkill) Execute(_ context.Context, q string) (string, error) {
-	n, err := strconv.Atoi(strings.TrimSpace(extractPayload(q)))
+	re := regexp.MustCompile(`-?\d+`)
+	m := re.FindString(q)
+	if m == "" {
+		return "", fmt.Errorf("no integer found")
+	}
+	n, err := strconv.Atoi(m)
 	if err != nil || n < 2 {
 		return "", fmt.Errorf("need integer ≥ 2")
 	}
@@ -319,7 +332,12 @@ func (s *FactorialSkill) Match(q string) bool {
 		strings.Contains(q, "n!")
 }
 func (s *FactorialSkill) Execute(_ context.Context, q string) (string, error) {
-	n, err := strconv.Atoi(strings.TrimSpace(extractPayload(q)))
+	re := regexp.MustCompile(`-?\d+`)
+	m := re.FindString(q)
+	if m == "" {
+		return "", fmt.Errorf("no integer found")
+	}
+	n, err := strconv.Atoi(m)
 	if err != nil || n < 0 {
 		return "", fmt.Errorf("need non-negative integer")
 	}
@@ -345,7 +363,8 @@ func NewBaseConvertSkill() *BaseConvertSkill {
 }
 func (s *BaseConvertSkill) Match(q string) bool {
 	q = strings.ToLower(q)
-	return strings.Contains(q, "base convert") || strings.Contains(q, "convert base") ||
+	return strings.Contains(q, "base convert") || strings.Contains(q, "base_convert") ||
+		strings.Contains(q, "convert base") ||
 		strings.Contains(q, "bin to dec") || strings.Contains(q, "dec to hex") ||
 		strings.Contains(q, "hex to bin") || strings.Contains(q, "dec to bin") ||
 		strings.Contains(q, "bin to hex") || strings.Contains(q, "hex to dec") ||
@@ -424,15 +443,17 @@ func (s *RoundSigSkill) Match(q string) bool {
 		strings.Contains(q, "significant figures") || strings.Contains(q, "round_sig")
 }
 func (s *RoundSigSkill) Execute(_ context.Context, q string) (string, error) {
-	fields := strings.Fields(extractPayload(q))
-	if len(fields) < 2 {
+	// extractPayload leaves the skill name in place; pull numeric tokens via regex.
+	numRe := regexp.MustCompile(`-?\d+(?:\.\d+)?`)
+	nums := numRe.FindAllString(q, -1)
+	if len(nums) < 2 {
 		return "", fmt.Errorf("usage: round_sig <value> <sig-figs>")
 	}
-	v, err := strconv.ParseFloat(fields[0], 64)
+	v, err := strconv.ParseFloat(nums[0], 64)
 	if err != nil {
 		return "", fmt.Errorf("invalid value: %w", err)
 	}
-	sig, err := strconv.Atoi(fields[1])
+	sig, err := strconv.Atoi(nums[len(nums)-1])
 	if err != nil || sig < 1 {
 		return "", fmt.Errorf("invalid sig-figs (need positive integer)")
 	}
@@ -460,11 +481,12 @@ func (s *UnitsConvertSkill) Match(q string) bool {
 	if strings.Contains(q, "units convert") || strings.Contains(q, "convert units") {
 		return true
 	}
-	// Common unit pairs.
+	// Common unit pairs — keep these tight so they don't false-positive on
+	// "rgb to hex" (b to...) or "dec to hex" (which belongs to base_convert).
 	pairs := []string{
-		"b to kb", "kb to mb", "mb to gb", "gb to tb",
-		"bytes to", "kb to", "mb to", "gb to", "tb to",
-		"c to f", "f to c", "celsius to fahrenheit", "fahrenheit to celsius",
+		"bytes to kb", "byte to kb", "bytes to mb", "byte to mb",
+		"kb to mb", "mb to gb", "gb to tb", "tb to pb",
+		" c to f", " f to c", "celsius to fahrenheit", "fahrenheit to celsius",
 		"m to ft", "ft to m", "m to mile", "mile to m", "km to mile", "mile to km",
 		"kg to lb", "lb to kg", "g to oz", "oz to g",
 	}
@@ -640,7 +662,10 @@ func (s *RatioSimplifySkill) Match(q string) bool {
 		strings.Contains(q, "reduce ratio")
 }
 func (s *RatioSimplifySkill) Execute(_ context.Context, q string) (string, error) {
-	payload := extractPayload(q)
+	// extractPayload splits at first ':' which appears INSIDE the ratio
+	// (12:8). Strip the verb ourselves.
+	payload := stripVerb(q, "simplify ratio")
+	payload = strings.TrimSpace(payload)
 	parts := strings.FieldsFunc(payload, func(r rune) bool {
 		return r == ':' || r == '/' || r == ' '
 	})

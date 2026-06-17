@@ -32,8 +32,31 @@ func NewEncodeSkill() *EncodeSkill {
 }
 
 // Match checks if the query is asking for encoding/decoding.
+//
+// Defers to the specific encoding skills (base64_encode/base64_decode/
+// url_encode/url_decode/html_escape/html_unescape/hex_encode/hex_decode/
+// unicode_escape/unicode_unescape) when their tighter patterns would fire —
+// otherwise this general skill's "encode" / "decode" substrings would
+// non-deterministically win in the registry's map iteration.
 func (s *EncodeSkill) Match(query string) bool {
 	queryLower := strings.ToLower(query)
+	// Defer to specific skills when present.
+	deferPatterns := []string{
+		"base64 encode", "base64 decode", "encode base64", "decode base64",
+		"b64 encode", "b64 decode", "to base64", "from base64",
+		"base32 encode", "base32 decode", "to base32", "from base32",
+		"url encode", "url decode", "encode url", "decode url",
+		"urlencode", "urldecode", "percent encode",
+		"html escape", "html unescape", "escape html", "unescape html",
+		"hex encode", "hex decode", "encode hex", "decode hex",
+		"to hex ", "from hex", "to hexadecimal",
+		"unicode escape", "unicode unescape", "escape unicode", "unescape unicode",
+	}
+	for _, p := range deferPatterns {
+		if strings.Contains(queryLower, p) {
+			return false
+		}
+	}
 	keywords := []string{"base64", "url encode", "url decode", "json format", "json pretty", "encode", "decode"}
 	for _, keyword := range keywords {
 		if strings.Contains(queryLower, keyword) {

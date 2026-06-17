@@ -273,7 +273,7 @@ func (s *HashIdentifySkill) Execute(_ context.Context, q string) (string, error)
 
 type CVEParseSkill struct{ *kyoci.BaseSkill }
 
-var cveRe = regexp.MustCompile(`CVE-(\d{4})-(\d{4,})`)
+var cveRe = regexp.MustCompile(`(?i)CVE-(\d{4})-(\d{4,})`)
 
 func NewCVEParseSkill() *CVEParseSkill {
 	return &CVEParseSkill{BaseSkill: kyoci.NewBaseSkill(

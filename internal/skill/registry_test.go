@@ -173,7 +173,12 @@ func TestMathSkill(t *testing.T) {
 	}
 }
 
-// TestTimeSkill tests the time skill.
+// TestTimeSkill tests the (legacy) general time skill.
+//
+// After catalog expansion, the legacy skill DEFERS to specific time skills
+// (now, time_parse, time_format, time_diff, cron_next, epoch_convert) when
+// their tighter patterns fire. It still catches generic "current time" /
+// "what time" / "today" phrasings.
 func TestTimeSkill(t *testing.T) {
 	timeSkill := builtin.NewTimeSkill()
 	ctx := context.Background()
@@ -187,7 +192,11 @@ func TestTimeSkill(t *testing.T) {
 		{"current time", "what time is it", true, []string{"Current time"}},
 		{"current date", "current date", true, []string{"Current date"}},
 		{"unix timestamp", "unix timestamp", true, []string{"Unix timestamp"}},
-		{"general time query", "time", true, []string{"time"}},
+		// Bare "time" no longer matches — the legacy skill now requires a
+		// more specific phrase to avoid shadowing the new time skills.
+		{"no match for bare time", "time", false, []string{}},
+		// "now" defers to NowSkill.
+		{"now (deferred)", "now", false, []string{}},
 		{"no match", "hello world", false, []string{}},
 	}
 
@@ -212,7 +221,11 @@ func TestTimeSkill(t *testing.T) {
 	}
 }
 
-// TestHashSkill tests the hash skill.
+// TestHashSkill tests the (legacy) general hash skill.
+//
+// After the catalog expansion, the legacy hash skill DEFERS to the specific
+// md5/sha1/sha256 skills for any query that names the algorithm explicitly.
+// It now only matches generic "hash this" / "hash of" phrasings.
 func TestHashSkill(t *testing.T) {
 	hashSkill := builtin.NewHashSkill()
 	ctx := context.Background()
@@ -223,9 +236,11 @@ func TestHashSkill(t *testing.T) {
 		shouldMatch bool
 		contains    string
 	}{
-		{"md5 hash", "md5 hello", true, "MD5:"},
-		{"sha1 hash", "sha1 hello", true, "SHA1:"},
-		{"sha256 hash", "sha256 hello", true, "SHA256:"},
+		// Explicit algorithm names now defer to the specific skills.
+		{"md5 (deferred to specific md5 skill)", "md5 hello", false, ""},
+		{"sha1 (deferred)", "sha1 hello", false, ""},
+		{"sha256 (deferred)", "sha256 hello", false, ""},
+		// Generic hash phrasings still match the legacy skill.
 		{"hash this", "hash this test", true, "MD5:"},
 		{"hash of", "hash of test", true, "MD5:"},
 		{"no match", "hello world", false, ""},
@@ -250,7 +265,11 @@ func TestHashSkill(t *testing.T) {
 	}
 }
 
-// TestUUIDSkill tests the UUID skill.
+// TestUUIDSkill tests the (legacy) general UUID skill.
+//
+// After catalog expansion, the legacy skill DEFERS to uuid_v4 / uuid_v7 when
+// the user specifies a version, and to the dedicated GUIDSkill for Microsoft-
+// style GUIDs. It still matches generic "generate uuid" / "new uuid".
 func TestUUIDSkill(t *testing.T) {
 	uuidSkill := builtin.NewUUIDSkill()
 	ctx := context.Background()
@@ -264,7 +283,11 @@ func TestUUIDSkill(t *testing.T) {
 		{"generate uuid", "generate uuid", true, "UUID:"},
 		{"new uuid", "new uuid", true, "UUID:"},
 		{"random uuid", "random uuid", true, "UUID:"},
-		{"guid", "guid", true, "UUID:"},
+		// "guid" now defers to the dedicated GUIDSkill.
+		{"guid (deferred)", "guid", false, ""},
+		// Versioned UUIDs defer to the specific skills.
+		{"uuid v4 (deferred)", "generate uuid v4", false, ""},
+		{"uuid v7 (deferred)", "generate uuid v7", false, ""},
 		{"no match", "hello world", false, ""},
 	}
 
@@ -287,7 +310,12 @@ func TestUUIDSkill(t *testing.T) {
 	}
 }
 
-// TestEncodeSkill tests the encode/decode skill.
+// TestEncodeSkill tests the (legacy) general encode skill.
+//
+// After catalog expansion, the legacy skill DEFERS to the specific
+// base64_encode/base64_decode/url_encode/url_decode/etc. skills for any
+// encoding-specific phrasing. It still catches generic "encode"/"decode"
+// without a specific prefix.
 func TestEncodeSkill(t *testing.T) {
 	encodeSkill := builtin.NewEncodeSkill()
 	ctx := context.Background()
@@ -298,10 +326,12 @@ func TestEncodeSkill(t *testing.T) {
 		shouldMatch bool
 		contains    string
 	}{
-		{"base64 encode", "base64 encode hello", true, "Base64 encoded:"},
-		{"base64 decode", "base64 decode aGVsbG8=", true, "Base64 decoded:"},
-		{"url encode", "url encode hello world", true, "URL encoded:"},
-		{"url decode", "url decode hello%20world", true, "URL decoded:"},
+		// Specific encoding phrasings now defer to dedicated skills.
+		{"base64 encode (deferred)", "base64 encode hello", false, ""},
+		{"base64 decode (deferred)", "base64 decode aGVsbG8=", false, ""},
+		{"url encode (deferred)", "url encode hello world", false, ""},
+		{"url decode (deferred)", "url decode hello%20world", false, ""},
+		// json format is still handled by the legacy skill (jsonfmt).
 		{"json format", "json format {\"key\":\"value\"}", true, "Formatted JSON:"},
 		{"no match", "hello world", false, ""},
 	}

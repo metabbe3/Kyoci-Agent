@@ -228,8 +228,14 @@ func NewHexEncodeSkill() *HexEncodeSkill {
 }
 func (s *HexEncodeSkill) Match(q string) bool {
 	q = strings.ToLower(q)
-	return strings.Contains(q, "hex encode") || strings.Contains(q, "encode hex") ||
-		strings.Contains(q, "to hexadecimal") || (strings.Contains(q, "to hex") && !strings.Contains(q, "from hex"))
+	// Require the "encode" verb (or "to hex" with an explicit encode prefix)
+	// so we don't match "rgb to hex" / "dec to hex" (which belong to
+	// rgb_to_hex and base_convert respectively).
+	if strings.Contains(q, "hex encode") || strings.Contains(q, "encode hex") ||
+		strings.Contains(q, "to hexadecimal") || strings.Contains(q, "hex_encode") {
+		return true
+	}
+	return false
 }
 func (s *HexEncodeSkill) Execute(_ context.Context, q string) (string, error) {
 	t := quoteStripped(extractPayload(q))

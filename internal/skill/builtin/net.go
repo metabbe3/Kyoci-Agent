@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -35,15 +36,20 @@ func (s *IPValidateSkill) Match(q string) bool {
 		strings.Contains(q, "is this ip valid")
 }
 func (s *IPValidateSkill) Execute(_ context.Context, q string) (string, error) {
-	ipStr := strings.TrimSpace(extractPayload(q))
-	ip := net.ParseIP(ipStr)
+	// extractPayload mis-parses IPv6 (colons). Pull the IP via regex.
+	ipRe := regexp.MustCompile(`\b(\d{1,3}\.){3}\d{1,3}\b|([0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}`)
+	m := ipRe.FindString(q)
+	if m == "" {
+		return "invalid (not an IP address)", nil
+	}
+	ip := net.ParseIP(m)
 	if ip == nil {
 		return "invalid (not an IP address)", nil
 	}
 	if ip.To4() != nil {
-		return fmt.Sprintf("valid IPv4: %s", ipStr), nil
+		return fmt.Sprintf("valid IPv4: %s", m), nil
 	}
-	return fmt.Sprintf("valid IPv6: %s", ipStr), nil
+	return fmt.Sprintf("valid IPv6: %s", m), nil
 }
 
 // ---- IP info ----
@@ -62,10 +68,16 @@ func (s *IPInfoSkill) Match(q string) bool {
 		strings.Contains(q, "what is this ip") || strings.Contains(q, "information about ip")
 }
 func (s *IPInfoSkill) Execute(_ context.Context, q string) (string, error) {
-	ipStr := strings.TrimSpace(extractPayload(q))
-	ip := net.ParseIP(ipStr)
+	// Pull the IP via regex — extractPayload gets confused by colons in IPv6
+	// and stops too early for IPv4-with-trailing-text.
+	ipRe := regexp.MustCompile(`\b(\d{1,3}\.){3}\d{1,3}\b|([0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}`)
+	m := ipRe.FindString(q)
+	if m == "" {
+		return "", fmt.Errorf("no IP address found")
+	}
+	ip := net.ParseIP(m)
 	if ip == nil {
-		return "", fmt.Errorf("invalid IP address: %s", ipStr)
+		return "", fmt.Errorf("invalid IP address: %s", m)
 	}
 	var b strings.Builder
 	if v4 := ip.To4(); v4 != nil {
@@ -118,8 +130,14 @@ func (s *MACLookupSkill) Match(q string) bool {
 		strings.Contains(q, "vendor for mac") || strings.Contains(q, "who makes this mac")
 }
 func (s *MACLookupSkill) Execute(_ context.Context, q string) (string, error) {
-	macStr := strings.TrimSpace(extractPayload(q))
-	hw, err := net.ParseMAC(macStr)
+	// extractPayload splits on the first ':' (which is inside the MAC address),
+	// so pull via regex.
+	macRe := regexp.MustCompile(`([0-9a-fA-F]{2}[:-]){5}[0-9a-fA-F]{2}`)
+	m := macRe.FindString(q)
+	if m == "" {
+		return "", fmt.Errorf("no MAC address found")
+	}
+	hw, err := net.ParseMAC(m)
 	if err != nil {
 		return "", fmt.Errorf("invalid MAC: %w", err)
 	}
@@ -232,8 +250,19 @@ func (s *URLParseSkill) Match(q string) bool {
 		strings.Contains(q, "split url")
 }
 func (s *URLParseSkill) Execute(_ context.Context, q string) (string, error) {
-	urlStr := strings.TrimSpace(extractPayload(q))
-	u, err := url.Parse(urlStr)
+	// extractPayload would strip at the first ':' (inside https://), so pull
+	// the URL via regex instead.
+	urlRe := regexp.MustCompile(`(https?://[^\s]+|ftp://[^\s]+)`)
+	m := urlRe.FindString(q)
+	if m == "" {
+		// Fall back: text after the last space.
+		idx := strings.LastIndex(q, " ")
+		m = strings.TrimSpace(q[idx+1:])
+	}
+	if m == "" {
+		return "", fmt.Errorf("no URL found in query")
+	}
+	u, err := url.Parse(m)
 	if err != nil {
 		return "", fmt.Errorf("invalid URL: %w", err)
 	}
@@ -276,7 +305,14 @@ func (s *URLBuildSkill) Match(q string) bool {
 		strings.Contains(q, "compose url") || strings.Contains(q, "make url")
 }
 func (s *URLBuildSkill) Execute(_ context.Context, q string) (string, error) {
-	in := extractPayload(q)
+	// extractPayload breaks on the colons inside the JSON values, so find the
+	// JSON object directly via regex.
+	jsonRe := regexp.MustCompile(`\{[\s\S]*\}`)
+	m := jsonRe.FindString(q)
+	if m == "" {
+		return "", fmt.Errorf("no JSON object found in query")
+	}
+	in := m
 	parts := struct {
 		Scheme   string            `json:"scheme"`
 		Host     string            `json:"host"`
@@ -338,15 +374,26 @@ func (s *CIDRValidateSkill) Match(q string) bool {
 		strings.Contains(q, "is valid cidr")
 }
 func (s *CIDRValidateSkill) Execute(_ context.Context, q string) (string, error) {
-	cidr := strings.TrimSpace(extractPayload(q))
-	_, ipNet, err := net.ParseCIDR(cidr)
+	// Pull the CIDR block via regex — extractPayload can't cleanly separate
+	// "validate cidr 192.168.1.0/24" since there's no colon and the helper's
+	// stopword strip leaves "cidr 192.168.1.0/24".
+	cidrRe := regexp.MustCompile(`\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/\d{1,2}\b`)
+	m := cidrRe.FindString(q)
+	if m == "" {
+		return "", fmt.Errorf("no CIDR block found")
+	}
+	_, ipNet, err := net.ParseCIDR(m)
 	if err != nil {
 		return "", fmt.Errorf("invalid CIDR: %w", err)
 	}
 	ones, bits := ipNet.Mask.Size()
 	var b strings.Builder
-	fmt.Fprintf(&b, "valid CIDR: %s\n", cidr)
-	fmt.Fprintf(&b, "version: IPv%d\n", bits/8*4)
+	fmt.Fprintf(&b, "valid CIDR: %s\n", m)
+	version := 6
+	if bits == 32 {
+		version = 4
+	}
+	fmt.Fprintf(&b, "version: IPv%d\n", version)
 	fmt.Fprintf(&b, "mask bits: /%d (of %d)\n", ones, bits)
 	fmt.Fprintf(&b, "network: %s\n", ipNet.IP)
 	if bits == 32 {
@@ -505,20 +552,22 @@ func (s *DNSLookupSkill) Execute(ctx context.Context, q string) (string, error) 
 	low := strings.ToLower(q)
 	recordType := "A"
 	for _, t := range []string{"AAAA", "MX", "TXT", "NS", "CNAME", "PTR", "SRV"} {
-		if strings.Contains(low, " "+strings.ToLower(t)+" ") || strings.Contains(low, " "+strings.ToLower(t)+":") ||
-			strings.Contains(low, strings.ToLower(t)+" record") {
+		tl := strings.ToLower(t)
+		if strings.Contains(low, " "+tl+" ") || strings.Contains(low, " "+tl+":") ||
+			strings.Contains(low, tl+" record") {
 			recordType = t
 			break
 		}
 	}
-	domain := extractPayload(q)
-	// Strip leading record type from the payload if present.
-	domain = strings.TrimSpace(strings.TrimPrefix(strings.ToLower(domain), strings.ToLower(recordType)))
-	domain = strings.TrimSuffix(domain, ":")
-	domain = strings.TrimSpace(domain)
-	if domain == "" {
-		return "", fmt.Errorf("no domain specified")
+	// Pull the domain via regex — looks like a hostname with at least one dot,
+	// no spaces, no slashes. This avoids the extractPayload colon-stripping bug
+	// and the prior bug where the record type was prepended to the domain.
+	domainRe := regexp.MustCompile(`\b([a-z0-9]([-a-z0-9]*[a-z0-9])?\.)+[a-z]{2,}\b`)
+	m := domainRe.FindString(low)
+	if m == "" {
+		return "", fmt.Errorf("no domain found in query")
 	}
+	domain := m
 
 	r := net.Resolver{}
 	ctx2, cancel := context.WithTimeout(ctx, 5*time.Second)

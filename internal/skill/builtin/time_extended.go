@@ -69,7 +69,11 @@ func (s *TimeParseSkill) Match(q string) bool {
 		strings.Contains(q, "time parse")
 }
 func (s *TimeParseSkill) Execute(_ context.Context, q string) (string, error) {
-	in := strings.TrimSpace(extractPayload(q))
+	// extractPayload breaks on colons inside ISO timestamps; strip the verb.
+	in := strings.TrimSpace(stripVerb(q, "parse time"))
+	if in == "" {
+		in = strings.TrimSpace(stripVerb(q, "parse date"))
+	}
 	if in == "" {
 		return "", fmt.Errorf("no date to parse")
 	}
@@ -114,17 +118,18 @@ func (s *TimeFormatSkill) Match(q string) bool {
 		strings.Contains(q, "time_format")
 }
 func (s *TimeFormatSkill) Execute(_ context.Context, q string) (string, error) {
-	payload := extractPayload(q)
-	parts := strings.SplitN(payload, "\n", 2)
+	// extractPayload splits at the first ':' (inside the ISO timestamp). Strip
+	// the verb ourselves and split on '|' or newline.
+	payload := stripVerb(q, "format time")
+	parts := strings.SplitN(payload, "|", 2)
 	if len(parts) < 2 {
-		parts = strings.SplitN(payload, "|", 2)
+		parts = strings.SplitN(payload, "\n", 2)
 	}
 	if len(parts) < 2 {
 		return "", fmt.Errorf("usage: time_format <iso-date> <go-layout>")
 	}
 	t, err := time.Parse(time.RFC3339, strings.TrimSpace(parts[0]))
 	if err != nil {
-		// Try parsing with common alternates.
 		for _, layout := range []string{"2006-01-02 15:04:05", "2006-01-02", time.RFC1123} {
 			if t2, err2 := time.Parse(layout, strings.TrimSpace(parts[0])); err2 == nil {
 				t = t2
@@ -156,7 +161,8 @@ func (s *TimeDiffSkill) Match(q string) bool {
 		strings.Contains(q, "duration between") || strings.Contains(q, "elapsed between")
 }
 func (s *TimeDiffSkill) Execute(_ context.Context, q string) (string, error) {
-	payload := extractPayload(q)
+	// extractPayload breaks on the ':' inside ISO timestamps. Strip the verb.
+	payload := stripVerb(q, "time diff")
 	parts := strings.Fields(payload)
 	if len(parts) < 2 {
 		return "", fmt.Errorf("need two dates")
@@ -226,8 +232,12 @@ func (s *CronNextSkill) Match(q string) bool {
 		strings.Contains(q, "cron_next") || strings.Contains(q, "when next does cron")
 }
 func (s *CronNextSkill) Execute(_ context.Context, q string) (string, error) {
-	payload := extractPayload(q)
-	// Take the first 5 whitespace-separated tokens as the cron expr.
+	// extractPayload isn't useful here — the cron expr has no colon. Strip
+	// the verb manually and pull the next 5 whitespace-separated tokens.
+	payload := stripVerb(q, "cron_next")
+	if payload == q {
+		payload = stripVerb(q, "next cron")
+	}
 	fields := strings.Fields(payload)
 	if len(fields) < 5 {
 		return "", fmt.Errorf("need a 5-field cron expression")
@@ -354,7 +364,11 @@ func (s *EpochConvertSkill) Match(q string) bool {
 		strings.Contains(q, "unix to iso") || strings.Contains(q, "iso to unix")
 }
 func (s *EpochConvertSkill) Execute(_ context.Context, q string) (string, error) {
-	payload := strings.TrimSpace(extractPayload(q))
+	// extractPayload strips "convert " but not "epoch " prefix. Strip both verbs.
+	payload := strings.TrimSpace(stripVerb(q, "epoch convert"))
+	if payload == q {
+		payload = strings.TrimSpace(stripVerb(q, "convert epoch"))
+	}
 	// Direction 1: epoch → ISO.
 	if n, err := strconv.ParseInt(payload, 10, 64); err == nil {
 		var t time.Time

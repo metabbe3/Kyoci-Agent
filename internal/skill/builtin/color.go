@@ -48,6 +48,10 @@ func (s *ColorSkill) Match(query string) bool {
 		"color blend", "blend colors", "mix colors",
 		"analogous palette", "analogous colors",
 		"complementary palette", "complementary color",
+		// Defer to encoding skills when the user said "hex encode" / "hex decode"
+		// — those aren't color operations.
+		"hex encode", "hex decode", "encode hex", "decode hex",
+		"hex_escape", "hex_unescape",
 	} {
 		if strings.Contains(queryLower, specific) {
 			return false

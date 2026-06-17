@@ -409,11 +409,13 @@ func (s *EnvToJSONSkill) Execute(_ context.Context, q string) (string, error) {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		key, val, ok := splitKeyMessage(line)
-		if !ok {
+		// Env files use KEY=VALUE — split on first '=', not ':'.
+		idx := strings.Index(line, "=")
+		if idx <= 0 {
 			continue
 		}
-		// Strip optional surrounding quotes.
+		key := strings.TrimSpace(line[:idx])
+		val := strings.TrimSpace(line[idx+1:])
 		val = quoteStripped(val)
 		m[key] = val
 	}

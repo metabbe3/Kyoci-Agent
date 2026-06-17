@@ -328,13 +328,15 @@ func (s *TruncateSkill) Match(q string) bool {
 	return strings.Contains(q, "truncate ")
 }
 func (s *TruncateSkill) Execute(_ context.Context, q string) (string, error) {
-	payload := extractPayload(q)
-	// Match "50:" or "50 chars:" or "50 chars to:" prefix.
-	re := regexp.MustCompile(`^\s*(\d+)\s*(?:chars?|characters)?\s*(?::|to)?\s*`)
-	m := re.FindStringSubmatch(payload)
+	// extractPayload splits at the first ':' — but the truncate format itself
+	// uses ':' to separate the length from the text, so extractPayload returns
+	// just the text portion. Parse the full query instead.
+	re := regexp.MustCompile(`(\d+)\s*(?:chars?|characters)?\s*:\s*([\s\S]+)`)
+	m := re.FindStringSubmatch(q)
 	if m == nil {
-		// Default to a sensible truncation length.
+		// No length specified — use a default of 80 chars on whatever follows.
 		const defaultLen = 80
+		payload := extractPayload(q)
 		r := []rune(payload)
 		if len(r) <= defaultLen {
 			return payload, nil
@@ -346,7 +348,7 @@ func (s *TruncateSkill) Execute(_ context.Context, q string) (string, error) {
 	if err != nil || n < 0 {
 		return "", fmt.Errorf("invalid truncation length")
 	}
-	rest := strings.TrimSpace(strings.TrimPrefix(payload, m[0]))
+	rest := strings.TrimSpace(m[2])
 	r := []rune(rest)
 	if len(r) <= n {
 		return rest, nil
@@ -380,9 +382,11 @@ func (s *PadSkill) Execute(_ context.Context, q string) (string, error) {
 	} else if strings.Contains(low, "center") || strings.Contains(low, "centre") {
 		side = "center"
 	}
-	payload := extractPayload(q)
-	re := regexp.MustCompile(`^\s*(?:left|right|center)?\s*(\d+)\s*(\S)\s*:\s*(.+)$`)
-	m := re.FindStringSubmatch(payload)
+	// Parse the full query — extractPayload splits on the first ':' which
+	// breaks when the pad format itself uses ':' as the operand separator.
+	// Expected shape: "pad [left|right|center] <width> <char>: <text>"
+	re := regexp.MustCompile(`(\d+)\s+(\S)\s*:\s*(.+)$`)
+	m := re.FindStringSubmatch(q)
 	if m == nil {
 		return "", fmt.Errorf("expected format: 'pad [left|right|center] <width> <char>: <text>'")
 	}
@@ -392,7 +396,7 @@ func (s *PadSkill) Execute(_ context.Context, q string) (string, error) {
 	if len(m[2]) > 0 {
 		padChar = m[2]
 	}
-	text := m[3]
+	text := strings.TrimSpace(m[3])
 	if len([]rune(text)) >= width {
 		return text, nil
 	}
@@ -422,8 +426,9 @@ func NewReverseSkill() *ReverseSkill {
 }
 func (s *ReverseSkill) Match(q string) bool {
 	q = strings.ToLower(q)
-	return strings.HasPrefix(q, "reverse ") || strings.Contains(q, "reverse text") ||
-		strings.Contains(q, "reverse string") || strings.Contains(q, "reverse the")
+	return strings.HasPrefix(q, "reverse ") || strings.HasPrefix(q, "reverse:") ||
+		strings.Contains(q, "reverse text") || strings.Contains(q, "reverse string") ||
+		strings.Contains(q, "reverse the")
 }
 func (s *ReverseSkill) Execute(_ context.Context, q string) (string, error) {
 	in := extractPayload(q)
@@ -502,9 +507,15 @@ type IndentSkill struct {
 func (s *IndentSkill) Match(q string) bool {
 	q = strings.ToLower(q)
 	if s.mode == "indent" {
-		return strings.Contains(q, "indent ") && !strings.Contains(q, "indent level")
+		if strings.Contains(q, "indent level") {
+			return false
+		}
+		return strings.Contains(q, "indent ") || strings.Contains(q, "indent:") ||
+			strings.HasPrefix(q, "indent")
 	}
-	return strings.Contains(q, "dedent ") || strings.Contains(q, "unindent ")
+	return strings.Contains(q, "dedent ") || strings.Contains(q, "dedent:") ||
+		strings.HasPrefix(q, "dedent") ||
+		strings.Contains(q, "unindent ") || strings.Contains(q, "unindent:")
 }
 func (s *IndentSkill) Execute(_ context.Context, q string) (string, error) {
 	in := extractPayload(q)
@@ -526,17 +537,19 @@ func (s *IndentSkill) Execute(_ context.Context, q string) (string, error) {
 			lines[i] = prefix + line
 		}
 	} else {
+		// dedent: remove up to len(prefix) leading spaces from each line.
+		// Lines with fewer leading spaces keep whatever they have.
+		remove := len(prefix)
 		for i, line := range lines {
-			// Strip up to len(prefix) leading spaces.
-			stripped := strings.TrimLeft(line, " ")
-			delta := len(line) - len(stripped)
-			if delta > len(prefix) {
-				delta = len(prefix)
+			leading := 0
+			for leading < len(line) && line[leading] == ' ' {
+				leading++
 			}
-			lines[i] = strings.Repeat(" ", delta-len(prefix)) + stripped
-			if strings.HasPrefix(lines[i], "-") {
-				lines[i] = stripped
+			toRemove := leading
+			if toRemove > remove {
+				toRemove = remove
 			}
+			lines[i] = strings.Repeat(" ", leading-toRemove) + line[leading:]
 		}
 	}
 	return strings.Join(lines, "\n"), nil
@@ -571,12 +584,18 @@ func (s *RegexReplaceSkill) Match(q string) bool {
 		strings.Contains(q, "substitute regex") || strings.HasPrefix(q, "re.sub")
 }
 func (s *RegexReplaceSkill) Execute(_ context.Context, q string) (string, error) {
-	payload := extractPayload(q)
-	// Expect: /pattern/replacement/[flags]: text
-	re := regexp.MustCompile(`^\s*/(.+?)/(.*)/[gim]*\s*:\s*([\s\S]+)$`)
-	m := re.FindStringSubmatch(payload)
+	// extractPayload splits at the first ':' — but a regex like '\d{2}:\d{2}'
+	// contains colons, so we can't use it. Scan the full query for the
+	// /pattern/replacement/[flags]: text shape.
+	re := regexp.MustCompile(`/(.+?)/([^/]*)/[gim]*\s*:\s*([\s\S]+)`)
+	m := re.FindStringSubmatch(q)
 	if m == nil {
-		// Fall back to pipe-separated: "pattern|replacement|text"
+		// Fall back to pipe-separated: "regex_replace pattern|replacement|text"
+		idx := strings.Index(q, " ")
+		if idx < 0 {
+			return "", fmt.Errorf("expected '/pattern/replacement/: text' or 'pattern|replacement|text'")
+		}
+		payload := strings.TrimSpace(q[idx+1:])
 		parts := strings.SplitN(payload, "|", 3)
 		if len(parts) != 3 {
 			return "", fmt.Errorf("expected '/pattern/replacement/: text' or 'pattern|replacement|text'")

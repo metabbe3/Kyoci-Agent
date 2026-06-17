@@ -26,9 +26,23 @@ func NewUUIDSkill() *UUIDSkill {
 }
 
 // Match checks if the query is asking for a UUID.
+//
+// Defers to uuid_v4 / uuid_v7 when the user specifies a version. The legacy
+// "uuid" keyword catches unversioned requests; "guid" (Microsoft-style)
+// defers to the dedicated GUIDSkill.
 func (s *UUIDSkill) Match(query string) bool {
 	queryLower := strings.ToLower(query)
-	for _, keyword := range []string{"uuid", "guid", "generate uuid", "new uuid"} {
+	// Defer to specific skills.
+	if strings.Contains(queryLower, "uuid v4") || strings.Contains(queryLower, "uuidv4") ||
+		strings.Contains(queryLower, "uuid v7") || strings.Contains(queryLower, "uuidv7") ||
+		strings.Contains(queryLower, "time-ordered uuid") {
+		return false
+	}
+	// GUID/braced-format defers to the GUID skill.
+	if strings.Contains(queryLower, "guid") || strings.Contains(queryLower, "microsoft") {
+		return false
+	}
+	for _, keyword := range []string{"uuid", "generate uuid", "new uuid"} {
 		if strings.Contains(queryLower, keyword) {
 			return true
 		}

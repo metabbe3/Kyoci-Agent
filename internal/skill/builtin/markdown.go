@@ -25,8 +25,24 @@ func NewMarkdownSkill() *MarkdownSkill {
 }
 
 // Match checks if the query is asking for a markdown table.
+//
+// Defers to the specific markdown skills (outline, toc, strip, link_extract)
+// when their tighter patterns would fire. This legacy MarkdownSkill builds
+// tables from CSV-like input — it shouldn't shadow the specific skills.
 func (s *MarkdownSkill) Match(query string) bool {
 	queryLower := strings.ToLower(strings.TrimSpace(query))
+	// Defer to specific markdown skills.
+	deferPhrases := []string{
+		"markdown outline", "outline of markdown", "extract markdown outline",
+		"markdown toc", "table of contents", "generate toc",
+		"markdown strip", "strip markdown", "markdown to text", "md to text",
+		"extract links", "link extract", "urls in markdown", "find urls in",
+	}
+	for _, p := range deferPhrases {
+		if strings.Contains(queryLower, p) {
+			return false
+		}
+	}
 	if strings.Contains(queryLower, "markdown") {
 		return true
 	}
