@@ -123,23 +123,11 @@ func TestDefaultConfig(t *testing.T) {
 		}
 	}
 
-	// Test that all 4 roles are present
-	expectedRoles := []string{"developer", "sre", "qa", "pm"}
-	for _, name := range expectedRoles {
-		role, exists := cfg.Roles[name]
-		if !exists {
-			t.Errorf("Expected role %s to exist", name)
-			continue
-		}
-		if role.SystemPrompt == "" {
-			t.Errorf("Expected role %s to have a SystemPrompt", name)
-		}
-		if len(role.Tools) == 0 {
-			t.Errorf("Expected role %s to have tools", name)
-		}
-		if role.MaxIterations <= 0 {
-			t.Errorf("Expected role %s to have positive MaxIterations", name)
-		}
+	// Roles are no longer seeded by Default() — agents are markdown-driven
+	// via agents/*.md and registered by the orchestrator's loader. The
+	// cfg.Roles map is intentionally empty here.
+	if len(cfg.Roles) != 0 {
+		t.Errorf("Default() should return empty Roles map, got %d entries", len(cfg.Roles))
 	}
 }
 
@@ -489,9 +477,13 @@ func TestValidateOllamaWithoutAPIKey(t *testing.T) {
 
 func TestValidateRoleWithEmptySystemPrompt(t *testing.T) {
 	cfg := Default()
-	role := cfg.Roles["developer"]
-	role.SystemPrompt = ""
-	cfg.Roles["developer"] = role
+	// Roles are not seeded by Default() anymore — agents come from agents/*.md.
+	// Add one manually to exercise the validator's per-role empty-prompt check.
+	cfg.Roles["developer"] = &RoleConfig{
+		SystemPrompt:  "",
+		Tools:         []string{"terminal"},
+		MaxIterations: 5,
+	}
 
 	if err := cfg.Validate(); err == nil {
 		t.Error("Expected validation error for role with empty system_prompt")
@@ -502,9 +494,12 @@ func TestValidateRoleWithEmptySystemPrompt(t *testing.T) {
 
 func TestValidateRoleWithUnknownProvider(t *testing.T) {
 	cfg := Default()
-	role := cfg.Roles["developer"]
-	role.PreferredProvider = "nonexistent_provider"
-	cfg.Roles["developer"] = role
+	cfg.Roles["developer"] = &RoleConfig{
+		SystemPrompt:      "nonempty",
+		Tools:             []string{"terminal"},
+		MaxIterations:     5,
+		PreferredProvider: "nonexistent_provider",
+	}
 
 	if err := cfg.Validate(); err == nil {
 		t.Error("Expected validation error for role with unknown provider")
@@ -566,13 +561,11 @@ func TestThreadSafeGetters(t *testing.T) {
 		t.Error("Provider should have base URL")
 	}
 
-	// Test role getters
-	role, exists := cfg.GetRole("developer")
-	if !exists {
-		t.Error("GetRole() should find developer")
-	}
-	if role.GetSystemPrompt() == "" {
-		t.Error("Role should have system prompt")
+	// Roles are not seeded by Default() anymore — agents are markdown-driven
+	// via agents/*.md. Verify GetRole returns exists=false for unknown names
+	// rather than panicking on the empty map.
+	if _, exists := cfg.GetRole("developer"); exists {
+		t.Error("GetRole() should return exists=false on Default() (no seeded roles)")
 	}
 }
 

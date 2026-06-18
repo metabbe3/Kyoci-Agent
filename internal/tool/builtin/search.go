@@ -22,9 +22,9 @@ type SearchResult struct {
 
 // SearchTool implements the kyoci.Tool interface for web search.
 type SearchTool struct {
-	client        *http.Client
-	logger        *slog.Logger
-	searchAPIURL  string // Configurable search API endpoint
+	client       *http.Client
+	logger       *slog.Logger
+	searchAPIURL string // Configurable search API endpoint
 }
 
 // NewSearchTool creates a new search tool instance.

@@ -104,7 +104,14 @@ func (a *Agent) executeOrchestrated(ctx context.Context, task string) (*kyoci.Ta
 		return nil, fmt.Errorf("orchestrator planner failed: %w", err)
 	}
 	if len(steps) == 0 {
-		return nil, fmt.Errorf("orchestrator planner returned no steps")
+		// Planner legitimately returns [] for open-ended prompts it can't
+		// decompose into tool actions (e.g., "make it into landing pages",
+		// "what's the meaning of life"). Hard-failing here surfaces as a 500
+		// in the chat UI. Fall back to the legacy ReAct loop, which handles
+		// free-form reasoning without a planner. See loop.go:195-198 for the
+		// "orchestration disabled" path that uses the same executeReact.
+		a.logger.Info("orchestrator: planner returned no steps; falling back to ReAct loop")
+		return a.executeReact(ctx, task)
 	}
 	a.logger.Info("orchestrator: plan produced", "steps", len(steps))
 	// Log each step's description + tool hint so we can verify whether the

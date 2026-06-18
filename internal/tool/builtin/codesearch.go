@@ -73,10 +73,10 @@ func (c *CodeSearchTool) Execute(ctx context.Context, params map[string]interfac
 
 	exts := langExts(lang)
 	type hit struct {
-		file     string
+		file      string
 		startLine int
-		fn       string
-		body     string
+		fn        string
+		body      string
 	}
 	var hits []hit
 

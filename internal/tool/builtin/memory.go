@@ -17,8 +17,8 @@ import (
 // experiences, lessons learned, and stored facts. This makes the agent proactive
 // about recalling relevant information instead of only relying on auto-injection.
 type MemoryRecallTool struct {
-	store   kyoci.MemoryStore
-	logger  *slog.Logger
+	store  kyoci.MemoryStore
+	logger *slog.Logger
 }
 
 // NewMemoryRecallTool creates a new memory recall tool.

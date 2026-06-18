@@ -51,8 +51,8 @@ func (f *FormatTool) Execute(ctx context.Context, params map[string]interface{})
 	beforeLines := strings.Count(string(before), "\n") + 1
 
 	var (
-		cmd    string
-		args   []string
+		cmd     string
+		args    []string
 		workDir string
 	)
 	switch lang {

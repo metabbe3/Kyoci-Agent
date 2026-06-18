@@ -68,6 +68,56 @@ type SkillInfo struct {
 	Metadata map[string]string `json:"metadata,omitempty"`
 }
 
+// SideEffectSkill is a skill that mutates external state (filesystem writes,
+// shell execution, network mutation). The orchestrator MUST call
+// RequiresConfirmation() before Execute(); if true, the call routes through
+// the HITL hub for operator approval. DescribeSideEffect returns a
+// human-readable summary that the HITL prompt shows to the operator.
+//
+// Skills that only READ state (file_read, dns_lookup, port_check) do NOT
+// implement this interface — they execute without confirmation.
+type SideEffectSkill interface {
+	Skill
+	// RequiresConfirmation returns true if this invocation would mutate state
+	// and therefore needs operator approval via HITL. May return false for
+	// safe queries (e.g. dry-run, help).
+	RequiresConfirmation(query string) bool
+	// DescribeSideEffect returns a short human-readable description of what
+	// the skill will do, shown to the operator in the confirmation prompt.
+	DescribeSideEffect(query string) string
+}
+
+// ReadOnlyFSSkill marks skills that read from the filesystem but do not
+// mutate it. Used for permission classification and audit logging. Skills
+// implementing this still execute via the zero-AI fast path; the marker
+// only enables sandbox enforcement (path validation, size limits) in the
+// orchestrator. Behavior of the skill itself is unchanged.
+type ReadOnlyFSSkill interface {
+	Skill
+	// IsReadOnlyFS returns true. Exists for type-assertion; the return value
+	// is constant per implementation.
+	IsReadOnlyFS() bool
+}
+
+// AsSideEffectSkill returns the skill as a SideEffectSkill if it implements
+// the interface, else nil. Convenience for type-assertion in the orchestration
+// layer without forcing every caller to write the comma-ok pattern.
+func AsSideEffectSkill(s Skill) SideEffectSkill {
+	if se, ok := s.(SideEffectSkill); ok {
+		return se
+	}
+	return nil
+}
+
+// AsReadOnlyFSSkill returns the skill as a ReadOnlyFSSkill if it implements
+// the interface, else nil.
+func AsReadOnlyFSSkill(s Skill) ReadOnlyFSSkill {
+	if r, ok := s.(ReadOnlyFSSkill); ok {
+		return r
+	}
+	return nil
+}
+
 // ==============================================================================
 // Skill Registry
 // ==============================================================================

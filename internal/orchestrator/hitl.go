@@ -228,9 +228,9 @@ func (o *Orchestrator) executeWithRetry(
 		// Time to trigger HITL? Only on the boundary between pre-HITL and post-HITL.
 		if !hintInjected && attempt == preHITLAttempts && hook != nil {
 			req := hitl.HelpRequest{
-				TaskID:         taskID,
-				Role:           roleType.String(),
-				Attempt:        attempt,
+				TaskID:  taskID,
+				Role:    roleType.String(),
+				Attempt: attempt,
 				Question: fmt.Sprintf(
 					"I am stuck on task: %s\n\nLast verification output:\n%s\n\nI've tried %d attempt(s). Can you provide a hint?",
 					truncateForHitl(cleanTask, 300),

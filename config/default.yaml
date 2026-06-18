@@ -9,6 +9,27 @@ server:
 logging:
     level: "info"
     format: "json"
+    # Per-run agent execution traces. When true, every orchestrated agent run
+    # also writes a JSON-lines trace to <per_run_dir>/<YYYY-MM-DD>/run_<task_id>.log
+    # alongside stdout. These are job artifacts, NOT server logs — server runtime
+    # logs still go to stdout only (12-factor). Disable for hermetic test runs.
+    # Env: KYOCI_LOGGING_PER_RUN_ENABLED, KYOCI_LOGGING_PER_RUN_DIR
+    per_run_enabled: true
+    per_run_dir: "logs"
+# Per-task workspace configuration. Each orchestrated agent run that produces
+# user-facing files writes them under <dir>/<task_id>/. Tasks that write nothing
+# leave no folder behind. Existing projects/ content is unchanged.
+# Env: KYOCI_TASKS_DIR, KYOCI_TASKS_RETENTION_DAYS
+tasks:
+    dir: "tasks"
+    retention_days: 30  # informational — no auto-deletion; external scripts read this
+# Agents directory — markdown-driven agent definitions. The orchestrator walks
+# this dir at startup and registers each .md file as an agent. Each file has
+# YAML frontmatter (name, description, triggers, tools, memory, priority) and
+# a markdown body that becomes the agent's system prompt ("soul").
+# Add a new agent by dropping another .md file here — no Go code required.
+# Env: KYOCI_AGENTS_DIR
+agents_dir: "agents"
 memory:
     db_path: "data/kyoci.db"
     compaction_threshold: 0.75
@@ -57,10 +78,10 @@ mcp:
 providers:
     ollama:
         enabled: false
-        base_url: "http://192.168.2.1:11434/v1"
-        default_model: "gemma4:12b"
+        base_url: "http://127.0.0.1:1234"
+        default_model: "google/gemma-4-e4b"
         timeout: 300
-        max_retries: 2
+        max_retries: 5
     lmstudio:
         enabled: true
         base_url: "http://127.0.0.1:1234/v1"
@@ -74,12 +95,12 @@ providers:
         timeout: 120
         max_retries: 3
     anthropic:
-        enabled: true
+        enabled: false # flip to true + paste api_key when ready
         base_url: "https://api.z.ai/api/anthropic"
         default_model: "GLM-4.7"
         timeout: 1000
         max_retries: 3
-        api_key: ""  # paste your z.ai / Anthropic key here (never commit real keys)
+        api_key: "" # paste your z.ai / Anthropic key here (never commit real keys)
     gemini:
         enabled: false
         base_url: "https://generativelanguage.googleapis.com/v1beta/openai"
@@ -262,3 +283,14 @@ prompt_skills:
     # chars) must stay the strongest signal before the
     # task for 8B-class models. Larger budgets dilute it
     # and trigger reflection-loop exhaustion.
+
+# ── Filesystem skills ─────────────────────────────────
+# Sandbox + walk caps for project_* skills (project_status, project_structure,
+# project_languages, project_deps, etc.). These read the filesystem and .git
+# internals but never mutate.
+# Overrides: KYOCI_FS_SKILLS_ENABLED, KYOCI_FS_SKILLS_MAX_WALK_FILES
+filesystem_skills:
+    enabled: true
+    sandbox_root: "."              # resolved at startup; project_* skills refuse paths outside this root
+    max_walk_files: 50000          # safety cap on directory walks
+    max_file_size: "10MB"          # skip individual files larger than this during walks

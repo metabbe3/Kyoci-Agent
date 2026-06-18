@@ -6,19 +6,13 @@ import (
 	"log/slog"
 	"sync"
 
-	kyoci "github.com/metabbe3/Kyoci-Agent/pkg"
 	"github.com/metabbe3/Kyoci-Agent/internal/agent"
+	"github.com/metabbe3/Kyoci-Agent/internal/agentdef"
 	"github.com/metabbe3/Kyoci-Agent/internal/config"
 	"github.com/metabbe3/Kyoci-Agent/internal/llm"
 	"github.com/metabbe3/Kyoci-Agent/internal/skill"
 	"github.com/metabbe3/Kyoci-Agent/internal/tool"
-
-	developerpkg "github.com/metabbe3/Kyoci-Agent/internal/role/developer"
-	srepkg "github.com/metabbe3/Kyoci-Agent/internal/role/sre"
-	qapkg "github.com/metabbe3/Kyoci-Agent/internal/role/qa"
-	pmpkg "github.com/metabbe3/Kyoci-Agent/internal/role/pm"
-	frontendpkg "github.com/metabbe3/Kyoci-Agent/internal/role/frontend"
-	generalistpkg "github.com/metabbe3/Kyoci-Agent/internal/role/generalist"
+	kyoci "github.com/metabbe3/Kyoci-Agent/pkg"
 )
 
 // =============================================================================
@@ -168,80 +162,56 @@ func (r *RoleRegistry) List() []kyoci.RoleConfig {
 	return configs
 }
 
-// RegisterDefaults registers all configured default roles from the config package.
-// This typically includes developer, sre, qa, and pm roles.
+// RegisterFromAgents registers one RoleAgent per loaded AgentDef. This is the
+// markdown-driven replacement for RegisterDefaults — instead of importing six
+// per-role Go packages, the registry accepts the []AgentDef the loader produced
+// from agents/*.md and converts each to a RoleConfig before delegating to the
+// existing Register path.
 //
-// Parameters:
-//   - cfg: The application config (may contain role overrides)
+// As with RegisterDefaults, the cfg argument captures thinking/orchestration
+// settings applied to every agent. Pass nil to keep the NewRoleRegistry
+// defaults (thinking disabled, sane budgets).
 //
-// Returns:
-//   - error: nil on success, error if any default role fails to register
-func (r *RoleRegistry) RegisterDefaults(cfg *config.Config) error {
-	r.logger.Info("registering default roles")
+// Returns an error on the first registration failure; prior successful
+// registrations remain in place.
+func (r *RoleRegistry) RegisterFromAgents(defs []agentdef.AgentDef, cfg *config.Config) error {
+	r.logger.Info("registering agents from markdown definitions", "count", len(defs))
 
-	// Capture thinking config so that subsequent Register() calls propagate
-	// it into each role agent's AgentConfig. When cfg is nil we keep the
-	// NewRoleRegistry defaults (thinking disabled, sane budgets).
 	if cfg != nil {
 		r.thinkingCfg = cfg.Agent.Thinking
 		r.orchCfg = cfg.Agent.Orchestration
 	}
 
-	// Import role-specific default configs
-	defaultConfigs := map[kyoci.RoleType]kyoci.RoleConfig{
-		kyoci.RoleDeveloper: developerpkg.DefaultConfig(),
-		kyoci.RoleSRE:       srepkg.DefaultConfig(),
-		kyoci.RoleQA:        qapkg.DefaultConfig(),
-		kyoci.RolePM:        pmpkg.DefaultConfig(),
-		kyoci.RoleFrontend:  frontendpkg.DefaultConfig(),
-		kyoci.RoleGeneralist: generalistpkg.DefaultConfig(),
-	}
-
-	// If config package has role defaults, use those
-	if cfg != nil && cfg.Roles != nil {
-		for roleName := range cfg.Roles {
-			var roleType kyoci.RoleType
-			switch roleName {
-			case "developer":
-				roleType = kyoci.RoleDeveloper
-			case "sre":
-				roleType = kyoci.RoleSRE
-			case "qa":
-				roleType = kyoci.RoleQA
-			case "pm":
-				roleType = kyoci.RolePM
-			case "frontend":
-				roleType = kyoci.RoleFrontend
-			case "generalist":
-				roleType = kyoci.RoleGeneralist
-			default:
-				r.logger.Warn("unknown role name in defaults, skipping", "name", roleName)
-				continue
-			}
-
-			// Override default with config (map value is already a pointer)
-			roleConfig := cfg.Roles[roleName]
-			defaultConfigs[roleType] = kyoci.RoleConfig{
-				Type:              roleType,
-				SystemPrompt:      roleConfig.GetSystemPrompt(),
-				Tools:             roleConfig.GetTools(),
-				PreferredProvider: roleConfig.GetPreferredProvider(),
-				MaxIterations:     roleConfig.GetMaxIterations(),
-				Temperature:       0.3,
-				Model:             roleConfig.GetModel(),
-			}
+	registered := 0
+	for _, def := range defs {
+		roleCfg := kyoci.RoleConfig{
+			Type:              kyoci.RoleType(def.Name),
+			SystemPrompt:      def.SystemPrompt,
+			Tools:             def.Tools,
+			PreferredProvider: def.PreferredProvider,
+			Model:             def.Model,
+			MaxIterations:     def.MaxIterations,
+			Temperature:       0.3,
 		}
-	}
-
-	// Register all default roles
-	for roleType, roleConfig := range defaultConfigs {
-		if err := r.Register(roleConfig); err != nil {
-			r.logger.Error("failed to register default role", "type", roleType, "error", err)
-			return fmt.Errorf("failed to register default role %s: %w", roleType, err)
+		if err := r.Register(roleCfg); err != nil {
+			r.logger.Error("failed to register agent", "name", def.Name, "source", def.SourcePath, "error", err)
+			return fmt.Errorf("failed to register agent %s: %w", def.Name, err)
 		}
+		// Stash the recall-depth on the role agent so the orchestrator /
+		// memory injector can read it at dispatch time. Stored on a side map
+		// rather than RoleConfig because the legacy config struct is shared
+		// with non-agentdef callers.
+		if def.Memory.Enabled || def.Memory.RecallDepth > 0 {
+			r.mu.Lock()
+			if ra, ok := r.roles[roleCfg.Type]; ok {
+				ra.memorySpec = def.Memory
+			}
+			r.mu.Unlock()
+		}
+		registered++
 	}
 
-	r.logger.Info("default roles registered", "count", len(defaultConfigs))
+	r.logger.Info("agents registered from markdown", "count", registered)
 	return nil
 }
 
@@ -339,9 +309,10 @@ func (r *RoleRegistry) createRoleAgent(
 // It implements the kyoci.Role interface and delegates to the underlying agent.
 // Goroutine-safe: All methods are safe for concurrent use.
 type RoleAgent struct {
-	config kyoci.RoleConfig
-	agent  *agent.Agent
-	logger *slog.Logger
+	config     kyoci.RoleConfig
+	agent      *agent.Agent
+	logger     *slog.Logger
+	memorySpec agentdef.MemorySpec // from AgentDef.Memory; zero-value when registered via legacy RegisterDefaults
 }
 
 // Type returns the role type.
@@ -416,4 +387,33 @@ func (ra *RoleAgent) SetContextInjector(injector agent.ContextInjector) {
 // SetTaskRecorder sets the experience recorder on the underlying agent.
 func (ra *RoleAgent) SetTaskRecorder(recorder agent.TaskRecorder) {
 	ra.agent.SetTaskRecorder(recorder)
+}
+
+// WithRunLogger returns a clone of this RoleAgent whose underlying agent uses
+// the supplied logger for the duration of one task. Used by the orchestrator
+// to fan per-task events into a per-run log file without disturbing the
+// shared role agent (which other concurrent tasks may be using).
+//
+// Returns the receiver unchanged when ra is nil or l is nil. The clone shares
+// the role's config and the underlying tools/router/skills/memory; only the
+// logger pointer is swapped.
+func (ra *RoleAgent) WithRunLogger(l *slog.Logger) *RoleAgent {
+	if ra == nil || l == nil {
+		return ra
+	}
+	return &RoleAgent{
+		config:     ra.config,
+		agent:      ra.agent.WithLogger(l),
+		logger:     l,
+		memorySpec: ra.memorySpec,
+	}
+}
+
+// MemorySpec returns the per-agent memory configuration declared in the
+// agent's markdown frontmatter (memory.enabled, memory.recall_depth). Returns
+// the zero value (Enabled=false, RecallDepth=0) for roles registered via the
+// legacy RegisterDefaults path, in which case callers fall back to the
+// hardcoded recall limit they always used.
+func (ra *RoleAgent) MemorySpec() agentdef.MemorySpec {
+	return ra.memorySpec
 }

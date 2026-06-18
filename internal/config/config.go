@@ -79,6 +79,30 @@ type LogConfig struct {
 	// Format is the log output format (json, text)
 	// Default: json
 	Format string `yaml:"format" env:"KYOCI_LOG_FORMAT"`
+
+	// PerRunEnabled controls whether each orchestrated agent run also writes
+	// a JSON-lines trace to logs/<YYYY-MM-DD>/run_<task_id>.log in addition
+	// to stdout. Server runtime logs still go to stdout (12-factor); these
+	// per-run files are job artifacts, not server logs.
+	// Default: true
+	PerRunEnabled bool `yaml:"per_run_enabled" env:"KYOCI_LOGGING_PER_RUN_ENABLED"`
+
+	// PerRunDir is the root directory for per-run log files. The actual files
+	// land under <PerRunDir>/<YYYY-MM-DD>/. Default: "logs"
+	PerRunDir string `yaml:"per_run_dir" env:"KYOCI_LOGGING_PER_RUN_DIR"`
+}
+
+// TasksConfig configures the per-task workspace layout. Each orchestrated agent
+// run that produces user-facing files writes them under <Dir>/<task_id>/.
+type TasksConfig struct {
+	// Dir is the root directory for per-task workspaces. Default: "tasks".
+	Dir string `yaml:"dir" env:"KYOCI_TASKS_DIR"`
+
+	// RetentionDays is informational — the number of days completed task
+	// folders are kept before manual cleanup. No automatic deletion is
+	// performed; this field exists so external retention scripts can read it.
+	// Default: 30. 0 = retain forever.
+	RetentionDays int `yaml:"retention_days" env:"KYOCI_TASKS_RETENTION_DAYS"`
 }
 
 // GetLevel returns the log level.
@@ -346,6 +370,16 @@ type Config struct {
 	// to. The orchestrator emits HelpRequests when it exhausts its retry
 	// budget on tasks carrying a VERIFY: directive.
 	HITL HITLConfig `yaml:"hitl"`
+
+	// Tasks holds per-task workspace configuration. Each orchestrated run
+	// that writes user-facing files lands them under Tasks.Dir/<task_id>/.
+	Tasks TasksConfig `yaml:"tasks"`
+
+	// AgentsDir is the path to the markdown-driven agent definitions.
+	// The orchestrator's loader walks this dir for *.md files at startup and
+	// registers each as an agent. Default "agents" at the repo root.
+	// Env override: KYOCI_AGENTS_DIR.
+	AgentsDir string `yaml:"agents_dir"`
 }
 
 // HITLConfig configures the Human-In-The-Loop fallback subsystem.
@@ -500,9 +534,16 @@ func Default() *Config {
 			TLSEnabled: false,
 		},
 		Logging: LogConfig{
-			Level:  "info",
-			Format: "json",
+			Level:         "info",
+			Format:        "json",
+			PerRunEnabled: true,
+			PerRunDir:     "logs",
 		},
+		Tasks: TasksConfig{
+			Dir:           "tasks",
+			RetentionDays: 30,
+		},
+		AgentsDir: "agents",
 		Memory: MemoryConfig{
 			DBPath:              "./data/memory.db",
 			CompactionThreshold: 0.75,
@@ -557,10 +598,10 @@ func Default() *Config {
 		cfg.Providers[name] = defaults
 	}
 
-	// Apply role defaults
-	for name, defaults := range roleDefaults {
-		cfg.Roles[name] = &defaults
-	}
+	// Role defaults are no longer seeded here. Agents are markdown-driven —
+	// operators define them in agents/*.md and the orchestrator's loader
+	// registers them at startup. cfg.Roles stays empty by default and the
+	// YAML loader below no longer merges legacy role overrides either.
 
 	return cfg
 }
@@ -589,24 +630,9 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
 	}
 
-	// Merge role defaults: if YAML overwrote a role losing its system_prompt, restore from defaults
-	for name, defaultRole := range roleDefaults {
-		if role, exists := cfg.Roles[name]; exists {
-			if role.SystemPrompt == "" {
-				role.SystemPrompt = defaultRole.SystemPrompt
-			}
-			if role.Tools == nil {
-				role.Tools = defaultRole.Tools
-			}
-			if role.PreferredProvider == "" {
-				role.PreferredProvider = defaultRole.PreferredProvider
-			}
-			if role.MaxIterations == 0 {
-				role.MaxIterations = defaultRole.MaxIterations
-			}
-			cfg.Roles[name] = role
-		}
-	}
+	// Legacy role-merge shim removed. Roles are now markdown-driven; the
+	// YAML `roles:` section, if present, is preserved on cfg.Roles for
+	// backward-compat reads but no longer seeded from a Go map.
 
 	slog.Info("Configuration loaded from file", "path", path)
 
@@ -653,6 +679,15 @@ func (c *Config) Validate() error {
 	}
 	if c.Logging.Format != "json" && c.Logging.Format != "text" {
 		return apperr.Newf("config.log_format", apperr.KindInvalid, "invalid log_format: must be json or text")
+	}
+	if c.Logging.PerRunEnabled && c.Logging.PerRunDir == "" {
+		return apperr.Newf("config.logging.per_run_dir", apperr.KindInvalid, "logging.per_run_dir cannot be empty when per_run_enabled is true")
+	}
+	if c.Tasks.Dir == "" {
+		return apperr.Newf("config.tasks.dir", apperr.KindInvalid, "tasks.dir cannot be empty")
+	}
+	if c.Tasks.RetentionDays < 0 {
+		return apperr.Newf("config.tasks.retention_days", apperr.KindInvalid, "tasks.retention_days must be non-negative")
 	}
 
 	// Validate memory config
@@ -786,6 +821,30 @@ func (c *Config) applyEnvOverrides() error {
 	if v := os.Getenv("KYOCI_LOG_FORMAT"); v != "" {
 		c.Logging.Format = v
 		slog.Info("Override applied", "setting", "log_format", "value", v)
+	}
+	if v := os.Getenv("KYOCI_LOGGING_PER_RUN_ENABLED"); v != "" {
+		c.Logging.PerRunEnabled = parseBoolEnv(v)
+		slog.Info("Override applied", "setting", "logging.per_run_enabled", "value", c.Logging.PerRunEnabled)
+	}
+	if v := os.Getenv("KYOCI_LOGGING_PER_RUN_DIR"); v != "" {
+		c.Logging.PerRunDir = v
+		slog.Info("Override applied", "setting", "logging.per_run_dir", "value", v)
+	}
+
+	// Tasks overrides
+	if v := os.Getenv("KYOCI_TASKS_DIR"); v != "" {
+		c.Tasks.Dir = v
+		slog.Info("Override applied", "setting", "tasks.dir", "value", v)
+	}
+	if v := os.Getenv("KYOCI_TASKS_RETENTION_DAYS"); v != "" {
+		c.Tasks.RetentionDays = parseIntEnv(v, c.Tasks.RetentionDays)
+		slog.Info("Override applied", "setting", "tasks.retention_days", "value", c.Tasks.RetentionDays)
+	}
+
+	// AgentsDir override
+	if v := os.Getenv("KYOCI_AGENTS_DIR"); v != "" {
+		c.AgentsDir = v
+		slog.Info("Override applied", "setting", "agents_dir", "value", v)
 	}
 
 	// Memory overrides
@@ -992,9 +1051,17 @@ func (c *Config) GetAllProviders() map[string]ProviderConfig {
 }
 
 // GetRole returns a copy of the role configuration for the given name.
-// Returns false if the role does not exist.
+// Returns false if the role does not exist. Safe to call on a Config whose
+// Roles map is nil or empty (the default after the markdown-driven migration —
+// agents are seeded by the orchestrator's loader, not by Default()).
 func (c *Config) GetRole(name string) (RoleConfig, bool) {
+	if c == nil || c.Roles == nil {
+		return RoleConfig{}, false
+	}
 	role, exists := c.Roles[name]
+	if !exists || role == nil {
+		return RoleConfig{}, false
+	}
 	return *role, exists
 }
 

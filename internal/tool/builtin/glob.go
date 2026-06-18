@@ -122,11 +122,12 @@ func (m globstarMatcher) Match(rel string) bool {
 // compileGlobstar turns a glob pattern (with ** support) into a regex.
 //
 // Pattern syntax:
-//   **  → matches any number of path segments (including zero)
-//   *   → matches any run of non-/ characters
-//   ?   → matches a single non-/ character
-//   .   → literal dot
-//   other regex metachars → escaped
+//
+//	**  → matches any number of path segments (including zero)
+//	*   → matches any run of non-/ characters
+//	?   → matches a single non-/ character
+//	.   → literal dot
+//	other regex metachars → escaped
 func compileGlobstar(pattern string) globstarMatcher {
 	var b strings.Builder
 	b.WriteString("^")

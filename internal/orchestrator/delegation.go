@@ -6,8 +6,9 @@ import (
 	"log/slog"
 	"strings"
 
-	kyoci "github.com/metabbe3/Kyoci-Agent/pkg"
+	"github.com/metabbe3/Kyoci-Agent/internal/agent"
 	"github.com/metabbe3/Kyoci-Agent/internal/tool/builtin"
+	kyoci "github.com/metabbe3/Kyoci-Agent/pkg"
 )
 
 // subAgentPrefix is prepended to EVERY delegated sub-agent task.
@@ -28,9 +29,25 @@ QUALITY RULES (violating these = task failure):
 // wireDelegation connects the delegation tool's callback to the orchestrator.
 // When an agent spawns a sub-task, it calls orch.Execute() directly.
 // The sub-agent gets a quality enforcement prefix to ensure complete output.
+//
+// Explore dispatch: if the goal starts with "explore:" or "explore ", route to
+// the read-only explore worker instead of the regular recursive orchestrator.
+// The explore worker has a restricted toolset (glob/grep/file:read/git/etc.)
+// and returns only a Markdown summary, mirroring Claude Code's context-isolated
+// Task tool pattern. This keeps the parent's context window clean.
 func (o *Orchestrator) wireDelegation(tool *builtin.DelegationTool) {
 	tool.SetCallback(func(ctx context.Context, goal string, contextInfo string) (string, error) {
 		slog.Info("delegation callback invoked", "goal", goal, "context_len", len(contextInfo))
+
+		// Explore dispatch — read-only sub-agent with context isolation.
+		if agent.HasExplorePrefix(goal) {
+			question := agent.StripExplorePrefix(goal)
+			if contextInfo != "" {
+				question = question + "\n\nAdditional context: " + contextInfo
+			}
+			slog.Info("delegation: routing to explore worker", "question", question)
+			return o.RunExplore(ctx, question)
+		}
 
 		// Build the task string with quality prefix
 		taskStr := subAgentPrefix + goal

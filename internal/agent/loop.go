@@ -468,6 +468,23 @@ func (a *Agent) SetConfig(config AgentConfig) {
 	a.config = config
 }
 
+// WithLogger returns a shallow clone of the agent with its logger replaced.
+// Used by the orchestrator to scope per-task events to a per-run log file
+// without mutating the shared role agent — the clone shares the underlying
+// router/tools/skills/memory (which are read-only during execution) and only
+// diverges on the logger pointer. Safe to call per-task; the clone is local
+// to the calling goroutine and is garbage-collected when the task returns.
+//
+// Returns the receiver unchanged when l is nil (no per-run logging in scope).
+func (a *Agent) WithLogger(l *slog.Logger) *Agent {
+	if a == nil || l == nil {
+		return a
+	}
+	clone := *a // shallow copy — shared pointers are intentional
+	clone.logger = l
+	return &clone
+}
+
 // GetConfig returns the current agent configuration.
 func (a *Agent) GetConfig() AgentConfig {
 	a.mu.RLock()

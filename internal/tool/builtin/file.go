@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/metabbe3/Kyoci-Agent/internal/taskctx"
 	"github.com/metabbe3/Kyoci-Agent/pkg"
 )
 
@@ -83,7 +84,10 @@ func (f *FileTool) Parameters() []kyoci.ToolParameter {
 // Execute performs file operations.
 //
 // Parameters:
-//   - ctx: Context for cancellation
+//   - ctx: Context for cancellation. Also carries the per-task workspace dir
+//     (set by the orchestrator via taskctx.WithWorkspace) — when present,
+//     relative paths resolve into the workspace and the workspace is added
+//     to the per-call allowed dirs so writes there pass the sandbox check.
 //   - params: Map containing "operation", "path", and optionally "content" or "pattern"
 //
 // Returns:
@@ -102,17 +106,23 @@ func (f *FileTool) Execute(ctx context.Context, params map[string]interface{}) (
 		return "", fmt.Errorf("path parameter is required and must be a string")
 	}
 
+	// Read the per-task workspace from ctx. When set, relative paths resolve
+	// into it and it's added to the allowed-dirs check for this call only —
+	// no mutation of the shared f.allowedDirs slice, so concurrent tasks on
+	// other workspaces are unaffected.
+	workspace := taskctx.WorkspaceFromCtx(ctx)
+
 	// Expand ~ and resolve to an absolute path BEFORE the allowed-dirs check,
 	// so the model's ~/Documents resolves to $HOME/Documents and passes the
 	// allow-check against the home directory. Without this the tilde is left
 	// literal and the call fails with an opaque "directory not found".
-	absPath, err := f.expandPath(path)
+	absPath, err := f.expandPath(path, workspace)
 	if err != nil {
 		return "", err
 	}
 
 	// Validate path
-	if !f.isPathAllowed(absPath) {
+	if !f.isPathAllowed(absPath, workspace) {
 		f.logger.Warn("path access denied", "path", absPath)
 		return "", fmt.Errorf("access denied: path outside allowed directories")
 	}
@@ -139,11 +149,12 @@ func (f *FileTool) Execute(ctx context.Context, params map[string]interface{}) (
 }
 
 // expandPath normalizes a path argument from the LLM. It expands a leading ~
-// to the user's home directory, then calls filepath.Abs to resolve relative
-// paths against the agent's working directory and clean any ".." components.
-// Errors surface a clear message rather than silently producing a path that
-// won't exist.
-func (f *FileTool) expandPath(path string) (string, error) {
+// to the user's home directory, then resolves relative paths. When workspace
+// is non-empty, relative paths resolve against the workspace dir (so a worker
+// writing "src/main.go" lands in <workspace>/src/main.go, not the process
+// CWD); absolute paths and ~ are unaffected. Errors surface a clear message
+// rather than silently producing a path that won't exist.
+func (f *FileTool) expandPath(path, workspace string) (string, error) {
 	if path == "" {
 		return "", fmt.Errorf("path is required")
 	}
@@ -160,6 +171,12 @@ func (f *FileTool) expandPath(path string) (string, error) {
 		} else if strings.HasPrefix(path, "~/") {
 			path = filepath.Join(home, path[2:])
 		}
+	}
+	// Relative paths: prefer the per-task workspace when set, else the
+	// process CWD. filepath.IsAbs is true for both Unix-absolute and ~-expanded
+	// (which became absolute in the branch above), so we don't double-resolve.
+	if !filepath.IsAbs(path) && workspace != "" {
+		path = filepath.Join(workspace, path)
 	}
 	abs, err := filepath.Abs(path)
 	if err != nil {
@@ -321,7 +338,7 @@ func (f *FileTool) listDirectory(path string) (string, error) {
 
 	var builder strings.Builder
 	builder.WriteString(fmt.Sprintf("Contents of %s (%d entries):\n", path, len(entries)))
-	
+
 	for _, entry := range entries {
 		info, _ := entry.Info()
 		fileType := "FILE"
@@ -344,7 +361,7 @@ func (f *FileTool) searchFiles(path string, params map[string]interface{}) (stri
 	f.logger.Info("searching files", "path", path, "pattern", pattern)
 
 	var results []string
-	
+
 	err := filepath.Walk(path, func(filePath string, info os.FileInfo, err error) error {
 		if err != nil {
 			// Skip files we can't access
@@ -390,16 +407,25 @@ func (f *FileTool) searchFiles(path string, params map[string]interface{}) (stri
 	return builder.String(), nil
 }
 
-// isPathAllowed checks if a path is within allowed directories.
-func (f *FileTool) isPathAllowed(path string) bool {
+// isPathAllowed checks if a path is within allowed directories. The per-call
+// workspace (when non-empty) is added to the allowed set for this check only.
+func (f *FileTool) isPathAllowed(path, workspace string) bool {
 	// Resolve to absolute path
 	absPath, err := filepath.Abs(path)
 	if err != nil {
 		return false
 	}
 
-	// Check against each allowed directory
-	for _, allowedDir := range f.allowedDirs {
+	// Build the effective allowed-dirs list: static config dirs plus the
+	// per-call workspace if set. Allocating a small slice per call is cheaper
+	// than tracking workspace membership with maps and avoids mutating the
+	// shared f.allowedDirs slice (which would race across concurrent tasks).
+	allowed := f.allowedDirs
+	if workspace != "" {
+		allowed = append(allowed, workspace)
+	}
+
+	for _, allowedDir := range allowed {
 		// Get absolute path of allowed directory
 		allowedAbs, err := filepath.Abs(allowedDir)
 		if err != nil {

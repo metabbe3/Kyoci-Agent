@@ -2,48 +2,54 @@ package orchestrator
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
-	kyoci "github.com/metabbe3/Kyoci-Agent/pkg"
 	"github.com/metabbe3/Kyoci-Agent/internal/agent"
+	"github.com/metabbe3/Kyoci-Agent/internal/agentdef"
 	"github.com/metabbe3/Kyoci-Agent/internal/apperr"
 	"github.com/metabbe3/Kyoci-Agent/internal/config"
+	"github.com/metabbe3/Kyoci-Agent/internal/hitl"
 	"github.com/metabbe3/Kyoci-Agent/internal/llm"
 	"github.com/metabbe3/Kyoci-Agent/internal/mcp"
 	"github.com/metabbe3/Kyoci-Agent/internal/memory"
 	"github.com/metabbe3/Kyoci-Agent/internal/role"
 	"github.com/metabbe3/Kyoci-Agent/internal/skill"
+	"github.com/metabbe3/Kyoci-Agent/internal/taskctx"
 	"github.com/metabbe3/Kyoci-Agent/internal/tool"
 	"github.com/metabbe3/Kyoci-Agent/internal/tool/builtin"
 	"github.com/metabbe3/Kyoci-Agent/internal/tracing"
+	kyoci "github.com/metabbe3/Kyoci-Agent/pkg"
 )
 
 // SystemStatus represents the current system status.
 type SystemStatus struct {
-	Status      string              `json:"status"`
-	Started     bool                `json:"started"`
-	Timestamp   time.Time           `json:"timestamp"`
-	Roles       []kyoci.RoleConfig  `json:"roles"`
+	Status      string                 `json:"status"`
+	Started     bool                   `json:"started"`
+	Timestamp   time.Time              `json:"timestamp"`
+	Roles       []kyoci.RoleConfig     `json:"roles"`
 	Tools       []kyoci.ToolDefinition `json:"tools"`
-	Skills      []kyoci.SkillInfo   `json:"skills"`
-	Providers   []string            `json:"providers"`
-	MemoryStats *memory.MemoryStats `json:"memory_stats,omitempty"`
+	Skills      []kyoci.SkillInfo      `json:"skills"`
+	Providers   []string               `json:"providers"`
+	MemoryStats *memory.MemoryStats    `json:"memory_stats,omitempty"`
 }
 
 // Orchestrator is the central coordinator that ties all subsystems together.
 // It manages the lifecycle of all components and routes tasks to the appropriate role agents.
 // Goroutine-safe: All public methods are safe for concurrent use.
 type Orchestrator struct {
-	config           *config.Config
-	roleRegistry     *role.RoleRegistry
-	llmRouter        *llm.Router
-	providerReg      *llm.ProviderRegistry
-	toolReg          *tool.Registry
-	skillReg         *skill.Registry
-	memoryMgr        *memory.MemoryManager
+	config       *config.Config
+	roleRegistry *role.RoleRegistry
+	llmRouter    *llm.Router
+	providerReg  *llm.ProviderRegistry
+	toolReg      *tool.Registry
+	skillReg     *skill.Registry
+	memoryMgr    *memory.MemoryManager
 	// Intelligence subsystems
 	contextInjector  *memory.ContextInjector
 	experienceEngine *memory.ExperienceEngine
@@ -156,11 +162,32 @@ func New(cfg *config.Config) (*Orchestrator, error) {
 	}
 	logger.Info("delegation tool registered")
 
-	// 7. Create role registry and register defaults
+	// 7. Create role registry and register agents from markdown.
+	// The loader walks cfg.AgentsDir for *.md files at startup; each becomes
+	// an agent registered with the role registry. An empty or missing dir is
+	// non-fatal — the orchestrator still boots, but ClassifyRole returns
+	// RoleGeneralist for every task (no specialists available). Operators
+	// who hit this should create agents/*.md files (see agents/ in the repo
+	// for the six built-in specialists).
 	logger.Info("initializing role registry")
 	roleRegistry := role.NewRoleRegistry(llmRouter, toolReg, skillReg, memoryMgr)
-	if err := roleRegistry.RegisterDefaults(cfg); err != nil {
-		return nil, fmt.Errorf("failed to register default roles: %w", err)
+
+	agentDefs, loadErr := agentdef.LoadAgents(cfg.AgentsDir)
+	if loadErr != nil {
+		logger.Warn("agents dir load failed; continuing with empty agent set",
+			"dir", cfg.AgentsDir, "error", loadErr)
+	}
+	if len(agentDefs) > 0 {
+		SetDefaultAgentDefs(agentDefs)
+		if err := roleRegistry.RegisterFromAgents(agentDefs, cfg); err != nil {
+			return nil, fmt.Errorf("failed to register agents from %s: %w", cfg.AgentsDir, err)
+		}
+		logger.Info("agents registered from markdown",
+			"dir", cfg.AgentsDir, "count", len(agentDefs))
+	} else {
+		logger.Warn("no agent definitions loaded; ClassifyRole will return generalist for every task",
+			"dir", cfg.AgentsDir,
+			"hint", "create *.md files in agents/ to define specialists")
 	}
 
 	// 7. Create tracer
@@ -269,18 +296,73 @@ func (o *Orchestrator) Execute(ctx context.Context, task string, roleType kyoci.
 	}
 
 	// Get the role agent
-	agentRole, err := o.roleRegistry.Get(roleType)
+	roleAgent, err := o.roleRegistry.Get(roleType)
 	if err != nil {
 		o.logger.Error("failed to get role", "role", roleType.String(), "error", err)
 		return nil, fmt.Errorf("failed to get role %s: %w", roleType.String(), err)
 	}
 
+	// Per-task setup: mint an ID for log/manifest correlation, open the
+	// per-run log file, and prepare the workspace folder. Each of these
+	// degrades gracefully — a task must never fail because logging or
+	// workspace setup hit an I/O error.
+	startedAt := time.Now()
+	taskID := hitl.NewTaskID()
+	span.SetAttribute("task_id", taskID)
+
+	runLogger, runLoggerCloser, logPath := OpenRunLogger(o.config, taskID, startedAt)
+	defer runLoggerCloser()
+
+	taskDir, wsErr := PrepareWorkspace(o.config, taskID)
+	if wsErr != nil {
+		// Workspace setup failure is non-fatal — log and continue without one.
+		// The agent will still write to its legacy allowedDirs (".", home).
+		runLogger.Warn("orchestrator: workspace setup failed; continuing without per-task isolation",
+			"task_id", taskID, "err", wsErr)
+		taskDir = ""
+	}
+
+	// Carry the workspace + per-run logger through ctx so the file tool and
+	// the agent's log path pick them up without explicit plumbing.
+	ctx = taskctx.WithWorkspace(ctx, taskDir)
+	ctx = WithRunLogger(ctx, runLogger)
+
+	// Treat the role as the abstract interface from here on so the per-task
+	// clone returned by roleWithRunLogger can be a different concrete type.
+	var agentRole kyoci.Role = roleAgent
+
+	// Clone the role with the per-run logger so agent events (planner steps,
+	// worker tool calls, synthesizer output) land in the per-run file as well
+	// as stdout. The clone shares everything else with the role template.
+	agentRole = o.roleWithRunLogger(agentRole, runLogger)
+
+	runLogger.Info("orchestrator: task dispatched",
+		"task_id", taskID, "role", roleType.String(),
+		"workspace", taskDir, "log_path", logPath)
+
 	// Delegate to the role agent's Execute — wrapped in the HITL retry loop
 	// when the task carries a VERIFY: directive. executeWithRetry handles the
 	// single-shot fast path internally when no directive is present.
 	result, err := o.executeWithRetry(ctx, task, agentRole, roleType)
+
+	completedAt := time.Now()
+	status := "completed"
 	if err != nil {
-		o.logger.Error("task execution failed", "error", err, "role", roleType.String())
+		status = "failed"
+	}
+
+	// Record what the task produced. extractFilesWritten scans the result's
+	// tool-call log for `file` writes — these are the paths the manifest
+	// advertises. Empty list (research/Q&A task) → cleanup the empty workspace
+	// folder so tasks/ only holds folders with actual deliverables.
+	filesWritten := []string{}
+	if result != nil {
+		filesWritten = extractFilesWritten(result.ToolCallLog)
+	}
+	o.finalizeTaskWorkspace(taskID, roleType.String(), task, startedAt, completedAt, status, filesWritten, logPath, result, err)
+
+	if err != nil {
+		runLogger.Error("task execution failed", "task_id", taskID, "error", err, "role", roleType.String())
 		span.SetAttribute("error", err.Error())
 		return nil, err
 	}
@@ -288,12 +370,146 @@ func (o *Orchestrator) Execute(ctx context.Context, task string, roleType kyoci.
 	// Set the actual role used (may differ from request if auto-detected)
 	result.Role = roleType
 
-	o.logger.Info("task completed",
+	runLogger.Info("task completed",
+		"task_id", taskID,
 		"role", roleType.String(),
 		"iterations", result.Iterations,
-		"tool_calls", result.ToolCallsMade)
+		"tool_calls", result.ToolCallsMade,
+		"files_written", len(filesWritten),
+		"duration_ms", completedAt.Sub(startedAt).Milliseconds())
 
 	return result, nil
+}
+
+// roleWithRunLogger returns a role scoped to the supplied logger, when the
+// concrete role type supports it. *role.RoleAgent implements WithRunLogger;
+// any future role type that wants per-task logging opts in by implementing
+// the same method. Unsupported roles return unchanged — per-task agent
+// logging silently no-ops for them rather than failing the task.
+func (o *Orchestrator) roleWithRunLogger(r kyoci.Role, l *slog.Logger) kyoci.Role {
+	if r == nil || l == nil {
+		return r
+	}
+	type runLoggerAble interface {
+		WithRunLogger(*slog.Logger) kyoci.Role
+	}
+	// First try the concrete type — *role.RoleAgent returns *RoleAgent which
+	// is assignable to kyoci.Role. The interface assertion handles future
+	// implementations that return the abstract type directly.
+	if rl, ok := r.(runLoggerAble); ok {
+		return rl.WithRunLogger(l)
+	}
+	if rl, ok := r.(*role.RoleAgent); ok {
+		return rl.WithRunLogger(l)
+	}
+	return r
+}
+
+// finalizeTaskWorkspace writes the per-task manifest when files were produced
+// and removes the empty workspace folder when they weren't. Errors here are
+// logged but never propagated — manifest I/O failure must not fail a task
+// that already succeeded.
+func (o *Orchestrator) finalizeTaskWorkspace(
+	taskID, roleLabel, task string,
+	startedAt, completedAt time.Time,
+	status string,
+	filesWritten []string,
+	logPath string,
+	result *kyoci.TaskResult,
+	taskErr error,
+) {
+	if TaskDir(o.config, taskID) == "" {
+		return // workspaces disabled
+	}
+
+	summary := ""
+	if result != nil {
+		summary = truncateForHitl(result.Content, 500)
+	} else if taskErr != nil {
+		summary = truncateForHitl(taskErr.Error(), 500)
+	}
+
+	// Research/Q&A task — no files. Drop the empty folder so tasks/ stays clean.
+	if len(filesWritten) == 0 {
+		if err := CleanupIfEmpty(o.config, taskID); err != nil {
+			slog.Warn("orchestrator: workspace cleanup failed",
+				"task_id", taskID, "err", err)
+		}
+		return
+	}
+
+	manifest := taskManifest{
+		TaskID:       taskID,
+		Role:         roleLabel,
+		Task:         truncateForHitl(task, 1000),
+		StartedAt:    startedAt,
+		CompletedAt:  completedAt,
+		Status:       status,
+		Summary:      summary,
+		FilesCreated: filesWritten,
+		LogPath:      formatLogPath(logPath),
+	}
+	if err := writeManifest(o.config, taskID, manifest); err != nil {
+		slog.Warn("orchestrator: manifest write failed",
+			"task_id", taskID, "err", err)
+	}
+}
+
+// writeManifest atomically writes the per-task manifest.json next to the
+// deliverable/ folder. The tmp-file-then-rename pattern ensures a partial
+// write never leaves a corrupt manifest on disk.
+func writeManifest(cfg *config.Config, taskID string, m taskManifest) error {
+	root := TaskDir(cfg, taskID)
+	if root == "" {
+		return nil
+	}
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return fmt.Errorf("manifest mkdir %s: %w", root, err)
+	}
+	data, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return fmt.Errorf("manifest marshal: %w", err)
+	}
+	final := filepath.Join(root, "manifest.json")
+	tmp := final + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return fmt.Errorf("manifest write %s: %w", tmp, err)
+	}
+	if err := os.Rename(tmp, final); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("manifest rename %s: %w", final, err)
+	}
+	return nil
+}
+
+// extractFilesWritten returns the distinct paths targeted by `file` tool calls
+// with operation in {write, append, edit}. Order follows first occurrence.
+// Used to populate the per-task manifest from the result's tool-call log.
+func extractFilesWritten(log []kyoci.ToolCallEntry) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, e := range log {
+		if e.Tool != "file" {
+			continue
+		}
+		var args struct {
+			Operation string `json:"operation"`
+			Path      string `json:"path"`
+		}
+		if err := json.Unmarshal([]byte(e.Args), &args); err != nil {
+			continue
+		}
+		op := args.Operation
+		if op != "write" && op != "append" && op != "edit" {
+			continue
+		}
+		if args.Path == "" || seen[args.Path] {
+			continue
+		}
+		seen[args.Path] = true
+		out = append(out, args.Path)
+	}
+	return out
 }
 
 // ExecuteStream routes a task to the correct role agent with streaming response.
@@ -367,7 +583,7 @@ func (o *Orchestrator) ExecuteDirect(ctx context.Context, task string, systemPro
 		PreferredProvider: "",
 		EnableSkills:      true,
 		EnableMemory:      true,
-		EnableStreaming:    false,
+		EnableStreaming:   false,
 	}
 
 	ag := agent.NewAgent(agentCfg, o.llmRouter, o.toolReg.Kyoci(), o.skillReg.Kyoci(), o.memoryMgr)
@@ -380,6 +596,55 @@ func (o *Orchestrator) ExecuteDirect(ctx context.Context, task string, systemPro
 
 	o.logger.Info("direct task completed", "iterations", result.Iterations)
 	return result, nil
+}
+
+// RunExplore dispatches a read-only investigation using the Explore sub-agent
+// worker. The worker shares the orchestrator's LLM router, skills, memory, and
+// logger but gets a filtered tool provider that ONLY exposes glob, grep,
+// file:read, git, codesearch, lsp — no write/patch/terminal. Returns the
+// worker's Markdown summary directly (no metrics appended).
+//
+// This mirrors Claude Code's context-isolated Task tool: the parent agent's
+// context window sees only the summary, not the raw file dumps the explore
+// worker reads during its investigation.
+func (o *Orchestrator) RunExplore(ctx context.Context, question string) (string, error) {
+	o.mu.RLock()
+	started := o.started
+	o.mu.RUnlock()
+
+	if !started {
+		return "", apperr.ErrNotStarted
+	}
+
+	ctx, span := o.tracer.StartSpan(ctx, "Orchestrator.RunExplore")
+	defer span.End()
+
+	agentCfg := agent.AgentConfig{
+		SystemPrompt:    agent.ExploreSystemPrompt,
+		MaxIterations:   15,
+		ToolChoice:      "auto",
+		Temperature:     0.3, // lower temp → more deterministic exploration
+		MaxTokens:       4096,
+		PreferredProvider: "",
+		EnableSkills:    false, // skills don't apply to exploration
+		EnableMemory:    true,
+		EnableStreaming:  false,
+	}
+
+	// Wrap the tool registry with the read-only filter. The filter is the
+	// airtight defense: the explore worker literally cannot call write tools.
+	tools := agent.NewReadOnlyToolFilter(o.toolReg.Kyoci(), nil)
+	ag := agent.NewAgent(agentCfg, o.llmRouter, tools, o.skillReg.Kyoci(), o.memoryMgr)
+
+	o.logger.Info("explore worker dispatched", "question", question)
+	result, err := ag.Execute(ctx, question)
+	if err != nil {
+		o.logger.Error("explore worker failed", "error", err)
+		return "", err
+	}
+	o.logger.Info("explore worker completed", "iterations", result.Iterations,
+		"tool_calls", result.ToolCallsMade, "summary_len", len(result.Content))
+	return result.Content, nil
 }
 
 // Status returns the current system status.

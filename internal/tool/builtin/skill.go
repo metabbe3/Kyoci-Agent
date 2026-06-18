@@ -94,18 +94,18 @@ func (s *SkillTool) Execute(ctx context.Context, params map[string]interface{}) 
 // getSkillsDir returns the skills directory path, creating it if needed.
 func (s *SkillTool) getSkillsDir() (string, error) {
 	skillsDir := "data/skills"
-	
+
 	// Create directory if it doesn't exist
 	if err := os.MkdirAll(skillsDir, 0755); err != nil {
 		return "", fmt.Errorf("failed to create skills directory: %w", err)
 	}
-	
+
 	// Resolve to absolute path
 	absPath, err := filepath.Abs(skillsDir)
 	if err != nil {
 		return "", fmt.Errorf("failed to resolve skills directory path: %w", err)
 	}
-	
+
 	return absPath, nil
 }
 

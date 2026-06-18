@@ -2,16 +2,12 @@ package role
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/metabbe3/Kyoci-Agent/internal/agent"
-	"github.com/metabbe3/Kyoci-Agent/internal/config"
 	"github.com/metabbe3/Kyoci-Agent/internal/llm"
-	developerpkg "github.com/metabbe3/Kyoci-Agent/internal/role/developer"
-	pmpkg "github.com/metabbe3/Kyoci-Agent/internal/role/pm"
-	qapkg "github.com/metabbe3/Kyoci-Agent/internal/role/qa"
-	srepkg "github.com/metabbe3/Kyoci-Agent/internal/role/sre"
 	"github.com/metabbe3/Kyoci-Agent/internal/skill"
 	"github.com/metabbe3/Kyoci-Agent/internal/tool"
 	"github.com/metabbe3/Kyoci-Agent/internal/tool/builtin"
@@ -214,243 +210,9 @@ func TestRoleRegistry_List(t *testing.T) {
 	}
 }
 
-func TestRoleRegistry_RegisterDefaults(t *testing.T) {
-	registry := createTestRegistry(t)
-	defer closeTestResources(registry)
-
-	// Register default roles (no config overrides)
-	err := registry.RegisterDefaults(nil)
-	if err != nil {
-		t.Fatalf("RegisterDefaults() failed: %v", err)
-	}
-
-	// Verify all default roles are registered
-	for roleType := kyoci.RoleDeveloper; roleType <= kyoci.RolePM; roleType++ {
-		roleAgent, err := registry.Get(roleType)
-		if err != nil {
-			t.Errorf("Should have registered role %s, got error: %v", roleType, err)
-		}
-		if roleAgent == nil {
-			t.Errorf("Role %s should not be nil", roleType)
-		}
-	}
-
-	// Verify developer role specifically
-	devRole, err := registry.Get(kyoci.RoleDeveloper)
-	if err != nil {
-		t.Fatalf("Get(Developer) failed: %v", err)
-	}
-	if !containsString(devRole.SystemPrompt(), "autonomous developer") {
-		t.Errorf("Developer prompt should contain 'autonomous developer', got: %s", devRole.SystemPrompt())
-	}
-	if devRole.MaxIterations() != 15 {
-		t.Errorf("Developer MaxIterations should be 15, got: %d", devRole.MaxIterations())
-	}
-}
-
 // =============================================================================
 // Test Role Configurations
 // =============================================================================
-
-func TestDeveloperRole_Config(t *testing.T) {
-	cfg := developerpkg.DefaultConfig()
-
-	if cfg.Type != kyoci.RoleDeveloper {
-		t.Errorf("Expected RoleDeveloper, got: %v", cfg.Type)
-	}
-	if cfg.SystemPrompt == "" {
-		t.Error("SystemPrompt should not be empty")
-	}
-	if !containsString(cfg.SystemPrompt, "autonomous developer") {
-		t.Error("SystemPrompt should contain 'autonomous developer'")
-	}
-
-	// Check tools
-	if !containsStringSlice(cfg.Tools, "terminal") {
-		t.Error("Tools should contain 'terminal'")
-	}
-	if !containsStringSlice(cfg.Tools, "file") {
-		t.Error("Tools should contain 'file'")
-	}
-	if !containsStringSlice(cfg.Tools, "http_client") {
-		t.Error("Tools should contain 'http_client'")
-	}
-	if !containsStringSlice(cfg.Tools, "web_search") {
-		t.Error("Tools should contain 'web_search'")
-	}
-	if !containsStringSlice(cfg.Tools, "calculator") {
-		t.Error("Tools should contain 'calculator'")
-	}
-
-	// Check configuration
-	if cfg.PreferredProvider != "" {
-		t.Errorf("PreferredProvider should be empty, got: %s", cfg.PreferredProvider)
-	}
-	if cfg.MaxIterations != 15 {
-		t.Errorf("MaxIterations should be 15, got: %d", cfg.MaxIterations)
-	}
-	if cfg.Temperature != 0.3 {
-		t.Errorf("Temperature should be 0.3, got: %f", cfg.Temperature)
-	}
-}
-
-func TestDeveloperRole_Specialized(t *testing.T) {
-	cfg := developerpkg.SpecializedDeveloper()
-
-	if cfg.Type != kyoci.RoleDeveloper {
-		t.Errorf("Expected RoleDeveloper, got: %v", cfg.Type)
-	}
-	if !containsString(cfg.SystemPrompt, "specialize in Go development") {
-		t.Error("SystemPrompt should contain 'specialize in Go development'")
-	}
-	if !containsString(cfg.SystemPrompt, "table-driven tests") {
-		t.Error("SystemPrompt should contain 'table-driven tests'")
-	}
-}
-
-func TestSRERole_Config(t *testing.T) {
-	cfg := srepkg.DefaultConfig()
-
-	if cfg.Type != kyoci.RoleSRE {
-		t.Errorf("Expected RoleSRE, got: %v", cfg.Type)
-	}
-	if cfg.SystemPrompt == "" {
-		t.Error("SystemPrompt should not be empty")
-	}
-	if !containsString(cfg.SystemPrompt, "Site Reliability Engineer") {
-		t.Error("SystemPrompt should contain 'Site Reliability Engineer'")
-	}
-	if !containsString(cfg.SystemPrompt, "monitoring") {
-		t.Error("SystemPrompt should contain 'monitoring'")
-	}
-	if !containsString(cfg.SystemPrompt, "incident response") {
-		t.Error("SystemPrompt should contain 'incident response'")
-	}
-
-	// Check tools
-	if !containsStringSlice(cfg.Tools, "terminal") {
-		t.Error("Tools should contain 'terminal'")
-	}
-	if !containsStringSlice(cfg.Tools, "file") {
-		t.Error("Tools should contain 'file'")
-	}
-	if !containsStringSlice(cfg.Tools, "http_client") {
-		t.Error("Tools should contain 'http_client'")
-	}
-	if !containsStringSlice(cfg.Tools, "web_search") {
-		t.Error("Tools should contain 'web_search'")
-	}
-	if !containsStringSlice(cfg.Tools, "security_scan") {
-		t.Error("Tools should contain 'security_scan'")
-	}
-
-	// Check configuration
-	if cfg.PreferredProvider != "" {
-		t.Errorf("PreferredProvider should be empty, got: %s", cfg.PreferredProvider)
-	}
-	if cfg.MaxIterations != 15 {
-		t.Errorf("MaxIterations should be 15, got: %d", cfg.MaxIterations)
-	}
-	if cfg.Temperature != 0.6 {
-		t.Errorf("Temperature should be 0.6, got: %f", cfg.Temperature)
-	}
-}
-
-func TestQARole_Config(t *testing.T) {
-	cfg := qapkg.DefaultConfig()
-
-	if cfg.Type != kyoci.RoleQA {
-		t.Errorf("Expected RoleQA, got: %v", cfg.Type)
-	}
-	if cfg.SystemPrompt == "" {
-		t.Error("SystemPrompt should not be empty")
-	}
-	if !containsString(cfg.SystemPrompt, "Quality Assurance") {
-		t.Error("SystemPrompt should contain 'Quality Assurance'")
-	}
-	if !containsString(cfg.SystemPrompt, "Testing Strategies") {
-		t.Error("SystemPrompt should contain 'Testing Strategies'")
-	}
-	if !containsString(cfg.SystemPrompt, "code review") {
-		t.Error("SystemPrompt should contain 'code review'")
-	}
-	if !containsString(cfg.SystemPrompt, "security validation") {
-		t.Error("SystemPrompt should contain 'security validation'")
-	}
-
-	// Check tools
-	if !containsStringSlice(cfg.Tools, "terminal") {
-		t.Error("Tools should contain 'terminal'")
-	}
-	if !containsStringSlice(cfg.Tools, "file") {
-		t.Error("Tools should contain 'file'")
-	}
-	if !containsStringSlice(cfg.Tools, "http_client") {
-		t.Error("Tools should contain 'http_client'")
-	}
-	if !containsStringSlice(cfg.Tools, "calculator") {
-		t.Error("Tools should contain 'calculator'")
-	}
-	if !containsStringSlice(cfg.Tools, "security_scan") {
-		t.Error("Tools should contain 'security_scan'")
-	}
-
-	// Check configuration
-	if cfg.PreferredProvider != "" {
-		t.Errorf("PreferredProvider should be empty, got: %s", cfg.PreferredProvider)
-	}
-	if cfg.MaxIterations != 6 {
-		t.Errorf("MaxIterations should be 6, got: %d", cfg.MaxIterations)
-	}
-	if cfg.Temperature != 0.6 {
-		t.Errorf("Temperature should be 0.6, got: %f", cfg.Temperature)
-	}
-}
-
-func TestPMRole_Config(t *testing.T) {
-	cfg := pmpkg.DefaultConfig()
-
-	if cfg.Type != kyoci.RolePM {
-		t.Errorf("Expected RolePM, got: %v", cfg.Type)
-	}
-	if cfg.SystemPrompt == "" {
-		t.Error("SystemPrompt should not be empty")
-	}
-	if !containsString(cfg.SystemPrompt, "Project Manager") {
-		t.Error("SystemPrompt should contain 'Project Manager'")
-	}
-	if !containsString(cfg.SystemPrompt, "planning") {
-		t.Error("SystemPrompt should contain 'planning'")
-	}
-	if !containsString(cfg.SystemPrompt, "prioritization") {
-		t.Error("SystemPrompt should contain 'prioritization'")
-	}
-	if !containsString(cfg.SystemPrompt, "stakeholder") {
-		t.Error("SystemPrompt should contain 'stakeholder'")
-	}
-
-	// Check tools - PM role doesn't have terminal
-	if !containsStringSlice(cfg.Tools, "file") {
-		t.Error("Tools should contain 'file'")
-	}
-	if !containsStringSlice(cfg.Tools, "http_client") {
-		t.Error("Tools should contain 'http_client'")
-	}
-	if !containsStringSlice(cfg.Tools, "web_search") {
-		t.Error("Tools should contain 'web_search'")
-	}
-
-	// Check configuration
-	if cfg.PreferredProvider != "" {
-		t.Errorf("PreferredProvider should be empty, got: %s", cfg.PreferredProvider)
-	}
-	if cfg.MaxIterations != 6 {
-		t.Errorf("MaxIterations should be 6, got: %d", cfg.MaxIterations)
-	}
-	if cfg.Temperature != 0.7 {
-		t.Errorf("Temperature should be 0.7, got: %f", cfg.Temperature)
-	}
-}
 
 // =============================================================================
 // Test RoleAgent Execution
@@ -628,90 +390,11 @@ func containsStringSlice(slice []string, item string) bool {
 // from *config.Config is propagated through to each registered role agent's
 // AgentConfig. This is the integration point that makes the thinking system
 // actually active in the running agent.
-func TestRegisterDefaults_WiresThinkingConfig(t *testing.T) {
-	registry := createTestRegistry(t)
-	defer closeTestResources(registry)
-
-	// Build a config with custom thinking values distinct from defaults.
-	cfg := &config.Config{
-		Agent: config.AgentConfig{
-			Thinking: config.ThinkingConfig{
-				Enabled:             true,
-				ToolBudget:          25,
-				MaxReflections:      5,
-				MaxReplans:          3,
-				ConfidenceThreshold: 0.9,
-				FewShot:             false,
-			},
-		},
-	}
-
-	if err := registry.RegisterDefaults(cfg); err != nil {
-		t.Fatalf("RegisterDefaults() failed: %v", err)
-	}
-
-	// Fetch the developer role and inspect its underlying agent's config.
-	// Test is in package role, so it can access the unexported `agent` field.
-	roleAgent, err := registry.Get(kyoci.RoleDeveloper)
-	if err != nil {
-		t.Fatalf("Get(Developer) failed: %v", err)
-	}
-
-	got := roleAgent.agent.GetConfig()
-
-	if !got.EnableThinking {
-		t.Errorf("EnableThinking = false, want true (config.Agent.Thinking.Enabled)")
-	}
-	if got.ThinkingToolBudget != 25 {
-		t.Errorf("ThinkingToolBudget = %d, want 25", got.ThinkingToolBudget)
-	}
-	if got.ThinkingMaxReflections != 5 {
-		t.Errorf("ThinkingMaxReflections = %d, want 5", got.ThinkingMaxReflections)
-	}
-	if got.ThinkingMaxReplans != 3 {
-		t.Errorf("ThinkingMaxReplans = %d, want 3", got.ThinkingMaxReplans)
-	}
-	if got.ThinkingConfidenceThreshold != 0.9 {
-		t.Errorf("ThinkingConfidenceThreshold = %v, want 0.9", got.ThinkingConfidenceThreshold)
-	}
-	if got.ThinkingFewShot {
-		t.Errorf("ThinkingFewShot = true, want false")
-	}
-}
 
 // TestRegisterDefaults_DisabledThinkingByDefault verifies that when
 // RegisterDefaults is called with a nil config (no thinking config available),
 // the thinking system remains disabled and the AgentConfig thinking fields
 // fall back to sensible defaults from DefaultAgentConfig.
-func TestRegisterDefaults_DisabledThinkingByDefault(t *testing.T) {
-	registry := createTestRegistry(t)
-	defer closeTestResources(registry)
-
-	// nil config — registry must not crash and should leave thinking disabled.
-	if err := registry.RegisterDefaults(nil); err != nil {
-		t.Fatalf("RegisterDefaults(nil) failed: %v", err)
-	}
-
-	roleAgent, err := registry.Get(kyoci.RoleDeveloper)
-	if err != nil {
-		t.Fatalf("Get(Developer) failed: %v", err)
-	}
-
-	got := roleAgent.agent.GetConfig()
-
-	// With no config provided, thinking stays disabled (PR #1 behavior).
-	if got.EnableThinking {
-		t.Errorf("EnableThinking = true, want false when no config provided")
-	}
-	// The other fields should fall back to DefaultAgentConfig values so the
-	// thinking system has sane budgets if it is later enabled.
-	if got.ThinkingToolBudget != 15 {
-		t.Errorf("ThinkingToolBudget = %d, want default 15", got.ThinkingToolBudget)
-	}
-	if got.ThinkingMaxReflections != 3 {
-		t.Errorf("ThinkingMaxReflections = %d, want default 3", got.ThinkingMaxReflections)
-	}
-}
 
 // Compile-time guard: ensure we reference agent package so the import is used.
 var _ = agent.AgentConfig{}
@@ -907,9 +590,11 @@ func BenchmarkRoleRegistry_Register(b *testing.B) {
 	}
 
 	b.ResetTimer()
+	// Use different role types for each iteration. RoleType is a string now,
+	// so synthesize distinct names from the loop counter to exercise the
+	// registry's map insertion path without colliding with built-in constants.
 	for i := 0; i < b.N; i++ {
-		// Use different role types for each iteration
-		cfg.Type = kyoci.RoleType(i % 4)
+		cfg.Type = kyoci.RoleType(fmt.Sprintf("bench-role-%d", i%4))
 		_ = registry.Register(cfg)
 	}
 }

@@ -2,8 +2,10 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -598,5 +600,194 @@ func TestWorker_SkipsGuardWhenToolHintEmpty(t *testing.T) {
 	}
 	if strings.HasPrefix(strings.TrimSpace(out), "[no tool evidence") {
 		t.Errorf("pure-reasoning output was wrongly tagged; got: %q", out)
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Empty-planner fallback (regression for chat 500 on open-ended prompts)
+// -----------------------------------------------------------------------------
+
+// sequenceProvider returns a configured sequence of responses across successive
+// Complete() calls. Used to simulate "planner returns []" on call #1 followed by
+// a real ReAct-loop response on call #2+.
+type sequenceProvider struct {
+	name      string
+	responses []*kyoci.CompletionResponse
+	calls     atomic.Int32
+}
+
+func (p *sequenceProvider) Name() string     { return p.name }
+func (p *sequenceProvider) IsAvailable() bool { return true }
+func (p *sequenceProvider) Models() []kyoci.ModelInfo {
+	return []kyoci.ModelInfo{{ID: "seq-mock", Provider: p.name}}
+}
+func (p *sequenceProvider) Stream(_ context.Context, _ kyoci.CompletionRequest) (<-chan kyoci.StreamChunk, error) {
+	return nil, errSequenceUnsupported
+}
+func (p *sequenceProvider) Complete(_ context.Context, _ kyoci.CompletionRequest) (*kyoci.CompletionResponse, error) {
+	idx := int(p.calls.Add(1)) - 1 // 1-based → 0-based
+	if idx >= len(p.responses) {
+		idx = len(p.responses) - 1 // clamp to last for any extra calls
+	}
+	return p.responses[idx], nil
+}
+
+var errSequenceUnsupported = errors.New("sequence provider: streaming unsupported")
+
+// TestExecuteOrchestrated_EmptyPlannerFallsBackToReact verifies the fix for
+// the chat-500 regression: when the planner returns 0 steps (as small models
+// routinely do for open-ended prompts like "make it into landing pages"),
+// executeOrchestrated must fall back to the legacy ReAct loop instead of
+// returning an error. Pre-fix this surfaced as HTTP 500 in the chat UI.
+func TestExecuteOrchestrated_EmptyPlannerFallsBackToReact(t *testing.T) {
+	// Call #1 = planner, returns empty array. Call #2 = ReAct's first LLM
+	// call, returns a normal completion with FinishStop so the loop exits.
+	provider := &sequenceProvider{
+		name: "seq",
+		responses: []*kyoci.CompletionResponse{
+			{Content: "[]", FinishReason: kyoci.FinishStop},             // planner → 0 steps
+			{Content: "Here's a plan for your landing pages.", FinishReason: kyoci.FinishStop}, // ReAct
+		},
+	}
+	cfg := DefaultAgentConfig()
+	cfg.Orchestration.Enabled = true
+	cfg.MaxIterations = 3
+	a := createTestAgent(cfg, provider)
+
+	result, err := a.Execute(context.Background(), "make it into landing pages")
+	if err != nil {
+		t.Fatalf("Execute returned error (regression — should fall back to ReAct): %v", err)
+	}
+	if result == nil {
+		t.Fatal("nil result")
+	}
+	// ReAct should have produced the canned response.
+	if !strings.Contains(result.Content, "landing pages") {
+		t.Errorf("expected ReAct output to surface; got %q", result.Content)
+	}
+	// Planner (call 1) + at least one ReAct call (call 2).
+	if calls := provider.calls.Load(); calls < 2 {
+		t.Errorf("expected ≥2 LLM calls (planner + ReAct); got %d", calls)
+	}
+}
+
+// TestExecuteOrchestrated_PlannerErrorStillPropagates verifies the inverse:
+// when planTask() itself errors (e.g., LLM timeout), executeOrchestrated must
+// still return that error. The fallback is for empty-but-valid plans only.
+func TestExecuteOrchestrated_PlannerErrorStillPropagates(t *testing.T) {
+	// First call returns malformed JSON → planTask returns parse error.
+	// We don't enter the ReAct fallback because the planner *errored*,
+	// not returned empty.
+	provider := &mockProvider{
+		name: "mock",
+		response: &kyoci.CompletionResponse{
+			Content:      "this is not JSON at all",
+			FinishReason: kyoci.FinishStop,
+		},
+	}
+	cfg := DefaultAgentConfig()
+	cfg.Orchestration.Enabled = true
+	cfg.MaxIterations = 2
+	a := createTestAgent(cfg, provider)
+
+	_, err := a.Execute(context.Background(), "do something")
+	if err == nil {
+		t.Fatal("expected planner error to propagate; got nil")
+	}
+	if !strings.Contains(err.Error(), "planner") {
+		t.Errorf("expected error mentioning planner; got %v", err)
+	}
+}
+
+// -----------------------------------------------------------------------------
+// PlannerPrompt content regression tests
+// -----------------------------------------------------------------------------
+
+// TestPlannerPrompt_IncludesBuildTaskGuidance verifies the rewritten prompt
+// contains the sections that let the planner decompose creative/build tasks
+// ("make a landing page", "build a CLI tool") into concrete file-creation
+// steps. Without these sections, small models emit [] for creative prompts
+// and the chat 500s. This test guards against prompt drift.
+func TestPlannerPrompt_IncludesBuildTaskGuidance(t *testing.T) {
+	prompt := PlannerPrompt("test task")
+	required := []string{
+		"BUILD-CREATE TASKS",
+		"PROJECT DIRECTORY CONVENTION",
+		"projects/<slug>/",
+		"landing-page/index.html",
+	}
+	for _, want := range required {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("PlannerPrompt missing %q — build-task decomposition will fail", want)
+		}
+	}
+}
+
+// TestPlannerPrompt_IncludesConversationalFallback verifies the prompt tells
+// the model to emit a single reasoning step (NOT an empty array) for pure
+// questions. This is the load-bearing fix for the chat-500 regression: the
+// old prompt let the model return [] which executeOrchestrated treated as
+// an error.
+func TestPlannerPrompt_IncludesConversationalFallback(t *testing.T) {
+	prompt := PlannerPrompt("test task")
+	required := []string{
+		"CONVERSATIONAL FALLBACK",
+		"NEVER emit []",
+		"no tool execution needed",
+		`"tool_hint":""`,
+	}
+	for _, want := range required {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("PlannerPrompt missing %q — empty-array fallback will resurface", want)
+		}
+	}
+}
+
+// TestPlannerPrompt_IncludesFewShotExamples verifies the three worked examples
+// are present. Small models (gemma-4-e4b) need anchors to produce valid JSON
+// plans; without examples they emit prose or [] .
+func TestPlannerPrompt_IncludesFewShotExamples(t *testing.T) {
+	prompt := PlannerPrompt("test task")
+	cases := []struct {
+		label, marker string
+	}{
+		{"build example", "landing-page/index.html"},
+		{"code example", "user_service.go"},
+		{"conversational example", "REST vs GraphQL"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.label, func(t *testing.T) {
+			if !strings.Contains(prompt, tc.marker) {
+				t.Errorf("PlannerPrompt missing %q — %s anchor lost", tc.marker, tc.label)
+			}
+		})
+	}
+}
+
+// TestPlannerPrompt_SkillCatalogPreserved verifies the skills catalog survived
+// the rewrite. The skill fast-path depends on the planner knowing the
+// categories so it can emit tool_hint="skill" for direct matches.
+func TestPlannerPrompt_SkillCatalogPreserved(t *testing.T) {
+	prompt := PlannerPrompt("test task")
+	for _, want := range []string{
+		"ZERO-AI SKILLS",
+		"tool_hint=\"skill\"",
+		"sha256",
+		"base64",
+		"yaml<->json",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("PlannerPrompt lost skill-catalog entry %q", want)
+		}
+	}
+}
+
+// TestPlannerPrompt_SchemaUnchanged verifies the JSON schema line is identical
+// to what parseOrchSteps expects. Changing the schema breaks the parser.
+func TestPlannerPrompt_SchemaUnchanged(t *testing.T) {
+	prompt := PlannerPrompt("test task")
+	want := `[{"id":1,"description":"...","depends_on":[],"tool_hint":"file|terminal|search|skill"}]`
+	if !strings.Contains(prompt, want) {
+		t.Errorf("PlannerPrompt schema changed — parser may break. Expected:\n  %s", want)
 	}
 }

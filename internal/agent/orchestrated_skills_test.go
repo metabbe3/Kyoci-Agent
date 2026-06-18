@@ -15,7 +15,7 @@ import (
 // =====================================================================================
 // Skill fast-path integration test (the capstone).
 //
-// Wires up the REAL production skill registry (all 125 skills) and verifies
+// Wires up the REAL production skill registry (all 240 skills) and verifies
 // that when the planner emits tool_hint="skill" for a natural-language query,
 // the orchestrator routes through the skill fast-path — NO worker LLM call
 // is made. This proves the agent can auto-use the new skills.

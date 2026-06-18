@@ -169,7 +169,7 @@ func (o *Orchestrator) buildPromptSkillInjector() *promptskill.PromptSkillInject
 		return nil
 	}
 	opts := promptskill.MatchOptions{
-		MaxSkills:    o.config.PromptSkill.MaxSkillsPerTask,
+		MaxSkills:     o.config.PromptSkill.MaxSkillsPerTask,
 		MaxTotalChars: o.config.PromptSkill.MaxTotalChars,
 	}
 	return promptskill.NewInjectorWithOptions(reg, o.logger, opts)

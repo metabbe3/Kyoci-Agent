@@ -52,7 +52,16 @@ export async function* chatStream(
 
   if (!r.ok || !r.body) {
     const text = await safeText(r);
-    throw new ApiError(`chat: ${r.status} ${text}`.trim(), {
+    // Server errors come as `{"error":"..."}` JSON. Parse so the user sees
+    // "orchestrator planner returned no steps" instead of the raw JSON blob.
+    let msg = text;
+    try {
+      const parsed = JSON.parse(text);
+      if (parsed && typeof parsed.error === "string") msg = parsed.error;
+    } catch {
+      // not JSON — keep raw text
+    }
+    throw new ApiError(`chat: ${r.status} ${msg}`.trim(), {
       kind: ApiErrorKind.Unknown,
       status: r.status,
       body: text,

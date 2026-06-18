@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 )
 
@@ -13,48 +14,62 @@ import (
 // ==============================================================================
 
 // RoleType represents the type of an agent role.
-// Goroutine-safe: This is a simple integer type and safe for concurrent use.
-type RoleType int
+//
+// RoleType is a string, not an int enum: the value doubles as the agent name
+// looked up in agents/<name>.md. The constants below cover the six built-in
+// specialists + the RoleCustom sentinel; arbitrary user-defined agents can be
+// constructed directly via RoleType("my-agent") and looked up in the registry
+// just like the built-ins.
+//
+// Goroutine-safe: This is a simple string type and safe for concurrent use.
+type RoleType string
 
 const (
 	// RoleDeveloper represents a developer role focused on coding and technical tasks
-	RoleDeveloper RoleType = iota
+	RoleDeveloper RoleType = "developer"
 	// RoleSRE represents a site reliability engineer role focused on operations and reliability
-	RoleSRE
+	RoleSRE RoleType = "sre"
 	// RoleQA represents a quality assurance role focused on testing and validation
-	RoleQA
+	RoleQA RoleType = "qa"
 	// RolePM represents a project manager role focused on planning and coordination
-	RolePM
+	RolePM RoleType = "pm"
 	// RoleFrontend represents a frontend developer role focused on UI/UX, HTML/CSS/JS/TS
-	RoleFrontend
+	RoleFrontend RoleType = "frontend"
 	// RoleGeneralist represents a generalist agent for research, explanation,
 	// and multi-domain tasks that don't clearly fit a specialist. It is the
 	// default fallback for the classifier.
-	RoleGeneralist
-	// RoleCustom represents a custom role defined by the user
-	RoleCustom
+	RoleGeneralist RoleType = "generalist"
+	// RoleCustom is the sentinel for "auto-classify this task" — the
+	// orchestrator routes through ClassifyRole instead of dispatching to a
+	// named role. Also returned by ParseRoleType for unrecognized names so
+	// legacy callers that switch on the constant keep working when handed an
+	// unknown string.
+	RoleCustom RoleType = "custom"
 )
 
-// String returns a string representation of the RoleType.
+// String returns the agent name for this RoleType. For string-backed
+// RoleTypes this is just the value itself; the method exists for backward
+// compatibility with code that called .String() on the old iota enum.
 func (rt RoleType) String() string {
-	switch rt {
-	case RoleDeveloper:
-		return "developer"
-	case RoleSRE:
-		return "sre"
-	case RoleQA:
-		return "qa"
-	case RolePM:
-		return "pm"
-	case RoleFrontend:
-		return "frontend"
-	case RoleGeneralist:
-		return "generalist"
-	case RoleCustom:
-		return "custom"
-	default:
-		return "unknown"
+	return string(rt)
+}
+
+// ParseRoleType returns the RoleType matching the given name (case-insensitive),
+// or RoleCustom if no built-in matches. User-defined agents created via
+// RoleType("name") round-trip through this function as RoleCustom — callers
+// that need to preserve an arbitrary name should construct RoleType(name)
+// directly rather than parse it.
+func ParseRoleType(name string) RoleType {
+	switch RoleType(name) {
+	case RoleDeveloper, RoleSRE, RoleQA, RolePM, RoleFrontend, RoleGeneralist, RoleCustom:
+		return RoleType(name)
 	}
+	// Case-insensitive fallback for tolerant parsing of HTTP/gRPC inputs.
+	switch RoleType(strings.ToLower(strings.TrimSpace(name))) {
+	case RoleDeveloper, RoleSRE, RoleQA, RolePM, RoleFrontend, RoleGeneralist, RoleCustom:
+		return RoleType(strings.ToLower(strings.TrimSpace(name)))
+	}
+	return RoleCustom
 }
 
 // Role is the interface that all agent roles must implement.

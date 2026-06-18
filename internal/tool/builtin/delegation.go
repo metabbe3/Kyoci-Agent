@@ -22,14 +22,14 @@ type DelegateFunc func(ctx context.Context, goal string, contextInfo string) (st
 // DelegateTask represents a delegated sub-task with its lifecycle state.
 // Goroutine-safe: DelegateTask values should be treated as immutable after creation.
 type DelegateTask struct {
-	ID         string    `json:"id"`
-	Goal       string    `json:"goal"`
-	Context    string    `json:"context"`
-	Status     string    `json:"status"`
-	Result     string    `json:"result,omitempty"`
-	Error      string    `json:"error,omitempty"`
-	CreatedAt  time.Time `json:"created_at"`
-	StartedAt  time.Time `json:"started_at,omitempty"`
+	ID          string    `json:"id"`
+	Goal        string    `json:"goal"`
+	Context     string    `json:"context"`
+	Status      string    `json:"status"`
+	Result      string    `json:"result,omitempty"`
+	Error       string    `json:"error,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+	StartedAt   time.Time `json:"started_at,omitempty"`
 	CompletedAt time.Time `json:"completed_at,omitempty"`
 }
 
@@ -37,12 +37,12 @@ type DelegateTask struct {
 // It maintains a task registry and provides concurrency control via a semaphore.
 // Goroutine-safe: All methods are safe for concurrent use.
 type DelegationTool struct {
-	tasks      sync.Map
-	callback   DelegateFunc
-	semaphore  chan struct{}
-	logger     *slog.Logger
+	tasks       sync.Map
+	callback    DelegateFunc
+	semaphore   chan struct{}
+	logger      *slog.Logger
 	taskCounter int
-	counterMu  sync.Mutex
+	counterMu   sync.Mutex
 }
 
 // NewDelegationTool creates a new delegation tool with a semaphore limiting parallel tasks.

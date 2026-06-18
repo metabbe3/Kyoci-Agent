@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os/exec"
 	"regexp"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -137,6 +138,8 @@ func lookBinary(name string) string {
 // runShellTimeout runs cmd in shell with a deadline. Returns combined stdout+stderr.
 // If the deadline passes, returns what was captured so far plus a timeout marker.
 // Caller is responsible for checking ctx.Err() == context.DeadlineExceeded.
+//
+// Cross-platform: on Unix systems uses /bin/sh -c; on Windows uses cmd.exe /c.
 func runShellTimeout(ctx context.Context, cmd string, workdir string, timeout time.Duration) (string, error) {
 	if timeout <= 0 {
 		timeout = 30 * time.Second
@@ -144,7 +147,11 @@ func runShellTimeout(ctx context.Context, cmd string, workdir string, timeout ti
 	rctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	c := exec.CommandContext(rctx, "/bin/sh", "-c", cmd)
+	shell, flag := "/bin/sh", "-c"
+	if runtime.GOOS == "windows" {
+		shell, flag = "cmd.exe", "/c"
+	}
+	c := exec.CommandContext(rctx, shell, flag, cmd)
 	if workdir != "" {
 		c.Dir = workdir
 	}

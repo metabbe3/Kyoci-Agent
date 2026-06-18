@@ -23,10 +23,10 @@ import (
 // It records every task it sees and returns the configured sequence of
 // TaskResults / errors across successive Execute calls.
 type stubRole struct {
-	mu          sync.Mutex
-	seenTasks   []string
-	responses   []stubResponse
-	callIdx     int
+	mu        sync.Mutex
+	seenTasks []string
+	responses []stubResponse
+	callIdx   int
 }
 
 type stubResponse struct {
@@ -34,11 +34,11 @@ type stubResponse struct {
 	err     error
 }
 
-func (s *stubRole) Type() kyoci.RoleType         { return kyoci.RoleCustom }
-func (s *stubRole) SystemPrompt() string          { return "" }
-func (s *stubRole) Tools() []string                { return nil }
-func (s *stubRole) PreferredProvider() string      { return "" }
-func (s *stubRole) MaxIterations() int              { return 1 }
+func (s *stubRole) Type() kyoci.RoleType      { return kyoci.RoleCustom }
+func (s *stubRole) SystemPrompt() string      { return "" }
+func (s *stubRole) Tools() []string           { return nil }
+func (s *stubRole) PreferredProvider() string { return "" }
+func (s *stubRole) MaxIterations() int        { return 1 }
 func (s *stubRole) Execute(_ context.Context, task string, _ kyoci.MemoryStore) (*kyoci.TaskResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -100,7 +100,7 @@ func newTestOrchestrator(t *testing.T, role kyoci.Role, hook hitl.HITLHook, maxR
 	// Role lookup goes through roleRegistry — for the test we bypass it by
 	// passing the role directly to executeWithRetry.
 	o := &Orchestrator{
-		logger:      testLogger(t),
+		logger:       testLogger(t),
 		shutdownChan: make(chan struct{}),
 	}
 	o.started = true
@@ -220,11 +220,12 @@ func TestExecuteWithRetry_VerifyPasses(t *testing.T) {
 }
 
 // TestExecuteWithRetry_HITLSuccess verifies the canonical L4 flow:
-//   attempt 1: fail
-//   attempt 2: fail (= preHITLAttempts when MaxRetries=1)
-//   HITL: hook called, hint returned
-//   attempt 3: succeed
-//   → lesson recorded
+//
+//	attempt 1: fail
+//	attempt 2: fail (= preHITLAttempts when MaxRetries=1)
+//	HITL: hook called, hint returned
+//	attempt 3: succeed
+//	→ lesson recorded
 func TestExecuteWithRetry_HITLSuccess(t *testing.T) {
 	// Build a verify command that fails on attempts 1-2 and passes on attempt 3.
 	// We use a file-based sentinel: the test's third call removes the file,
@@ -309,11 +310,12 @@ func TestExecuteWithRetry_HITLSuccess(t *testing.T) {
 }
 
 // TestExecuteWithRetry_HITLStillFails verifies the exhaustion path:
-//   attempt 1: fail
-//   attempt 2: fail
-//   HITL: hook called
-//   attempt 3: still fail
-//   → returns ErrHITLExhausted
+//
+//	attempt 1: fail
+//	attempt 2: fail
+//	HITL: hook called
+//	attempt 3: still fail
+//	→ returns ErrHITLExhausted
 func TestExecuteWithRetry_HITLStillFails(t *testing.T) {
 	tmp := t.TempDir()
 	sentinel := filepath.Join(tmp, "always-failing")
@@ -432,11 +434,11 @@ type wrappingRole struct {
 	onCall func(task string)
 }
 
-func (w *wrappingRole) Type() kyoci.RoleType                  { return w.inner.Type() }
-func (w *wrappingRole) SystemPrompt() string                  { return w.inner.SystemPrompt() }
-func (w *wrappingRole) Tools() []string                       { return w.inner.Tools() }
-func (w *wrappingRole) PreferredProvider() string             { return w.inner.PreferredProvider() }
-func (w *wrappingRole) MaxIterations() int                    { return w.inner.MaxIterations() }
+func (w *wrappingRole) Type() kyoci.RoleType      { return w.inner.Type() }
+func (w *wrappingRole) SystemPrompt() string      { return w.inner.SystemPrompt() }
+func (w *wrappingRole) Tools() []string           { return w.inner.Tools() }
+func (w *wrappingRole) PreferredProvider() string { return w.inner.PreferredProvider() }
+func (w *wrappingRole) MaxIterations() int        { return w.inner.MaxIterations() }
 func (w *wrappingRole) Execute(ctx context.Context, task string, m kyoci.MemoryStore) (*kyoci.TaskResult, error) {
 	if w.onCall != nil {
 		w.onCall(task)

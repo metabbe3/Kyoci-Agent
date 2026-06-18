@@ -58,7 +58,7 @@ func TestRegistry(t *testing.T) {
 
 // TestRegisterBuiltin tests registering all built-in skills.
 //
-// The catalog is grouped into ~12 categories totalling 125+ skills. This
+// The catalog is grouped into ~12 categories totalling 240 skills. This
 // test verifies (a) the total count meets the floor (>=100), (b) every
 // category is present, and (c) one representative skill from each category
 // is registered.

@@ -1,6 +1,6 @@
 # Kyoci Agent v5
 
-A Go-based multi-agent platform built for **small local models** (8B–14B). Six specialist roles, a 151-entry built-in catalog (125 skills + 26 tools), an L3 SQLite memory layer, and a gRPC-streamed Human-In-The-Loop fallback — all orchestrated by a Go-driven pipeline that gives each LLM call exactly one job.
+A Go-based multi-agent platform built for **small local models** (8B–14B). Six specialist roles, a 262-entry built-in catalog (240 skills + 22 tools), an L3 SQLite memory layer, and a gRPC-streamed Human-In-The-Loop fallback — all orchestrated by a Go-driven pipeline that gives each LLM call exactly one job.
 
 ```
 ╔═══════════════════════════════════════╗
@@ -11,8 +11,8 @@ A Go-based multi-agent platform built for **small local models** (8B–14B). Six
 HTTP API:    http://localhost:8080
 HITL gRPC:   localhost:50052   (max_retries=2)
 Roles:       6   (developer, sre, qa, pm, frontend, generalist)
-Skills:      125 (zero-AI, deterministic — skip the LLM call)
-Tools:       26  (file/shell/code/web + 4 intelligence hooks)
+Skills:      240 (zero-AI, deterministic — skip the LLM call)
+Tools:       22  (file/shell/code/web + 4 intelligence hooks)
 Providers:   20  (Ollama, LM Studio, OpenAI, Anthropic, Gemini, ...)
 ```
 
@@ -69,7 +69,7 @@ Each task flows through a 4-phase Go-driven pipeline. Per-call jobs are small en
                │                              │ │ skip the worker LLM call.
                ▼                              ▼
            ClassifyRole()              a.skills.Match(task)
-           (pure-Go confidence         (125 zero-AI deterministic
+           (pure-Go confidence         (240 zero-AI deterministic
             score → role)               transformations)
 ```
 
@@ -94,7 +94,7 @@ Each specialist has a `DELEGATION` block in its system prompt and the `delegatio
 
 ## Catalog
 
-### Skills (125, zero-AI)
+### Skills (240, zero-AI)
 
 Match()'d by the registry and executed **without an LLM call** — instant and free.
 
@@ -111,9 +111,23 @@ Match()'d by the registry and executed **without an LLM call** — instant and f
 | **math** | 12 | stats, gcd, lcm, is_prime, prime_factors, factorial, base_convert, round_sig, units_convert, currency_format, percentage, ratio_simplify |
 | **time** | 6 | now, time_parse, time_format, time_diff, cron_next, epoch_convert |
 | **markdown** | 4 | markdown_outline, markdown_toc, markdown_strip, markdown_link_extract |
+| **encoding_ext** | 12 | base58, base62, base85 (ascii85), punycode, quoted_printable, url_safe_b64 (encode + decode) |
+| **barcodes** | 6 | ean13, ean8, upc_a, issn, vin, swift_bic (validate) |
+| **code_metrics** | 5 | loc_count, complexity_estimate, todo_extract, import_extract, function_signature_extract |
+| **compression** | 6 | gzip, zlib, flate (compress + decompress) |
+| **converters** | 6 | csv↔markdown_table, json↔markdown_table, tsv↔csv, list_to_markdown |
+| **geo** | 9 | haversine_distance, latlon_validate, latlon_parse, country alpha2↔alpha3↔name, currency_code_lookup, currency_symbol |
+| **jsonstruct** | 7 | json_flatten, json_unflatten, json_keys, json_values, json_path, json_pick, json_omit |
+| **otp_crypto** | 7 | totp_generate, hotp_generate, otp_secret_generate, random_hex, hmac_for_algorithm, timing_safe_compare, hmac_md5 |
+| **paths** | 10 | filepath_normalize/join/dir/base/ext/stem, mime_from_ext, ext_from_mime, path_is_absolute, path_is_relative |
+| **stats_ext** | 4 | variance, stddev_sample, percentile, quartile |
+| **string_algo** | 10 | soundex, metaphone, jaro, jaro_winkler, hamming_distance, lcs, lcs_substr, ngram, ngram_frequency, ratcliff_obershelp |
+| **sequences** | 6 | range, fibonacci, arithmetic_sequence, geometric_sequence, primes_upto, collatz |
+| **lookup_tables** | 15 | iso country/currency/language lists, http_status_all, mime_type_common, html_entity_common, ascii_table, uuid namespaces, unix_signal_list, file_signature_list, emoji_shortcode_list |
+| **project** | 12 | project_status, project_structure, project_languages, project_deps, project_entry_points, project_test_map, project_todo_scan, project_git_log, project_git_branches, project_ignore_check, project_env_check, project_explore — Claude-Code-style project exploration (pure-Go .git internals, no shell-out) |
 | **legacy** | 20 | math (evaluator), time, hash, uuid, encode, convert, color (all-reps), regex, jsonfmt, sqlfmt, diff, jwt, qr, password, charset, cron, subnet, lorem, markdown, emojinfo |
 
-### Tools (26, LLM-invokable)
+### Tools (22, LLM-invokable)
 
 | Tool | What it does |
 |---|---|
@@ -143,6 +157,16 @@ Match()'d by the registry and executed **without an LLM call** — instant and f
 | `remember` | Persist user fact/preference (intelligence hook) |
 | `security_scan` | OWASP-style vulnerability scan (intelligence hook) |
 | `delegation` | Spawn specialist sub-agents in parallel (intelligence hook) |
+
+### Explore sub-agent (context isolation)
+
+The `delegation` tool has a special prefix: any task starting with `explore:` or `explore ` is routed to a **read-only Explore worker** instead of the regular recursive orchestrator. The worker has:
+
+- **Restricted toolset**: `{glob, grep, file:read, git, codesearch, lsp, todo}` only. Write, patch, and terminal tools are filtered out at the `ToolProvider` layer — the model literally cannot see them.
+- **Explore system prompt**: directs the model to investigate read-only and return only a structured Markdown summary with file:line citations.
+- **Returns just the summary**: the parent agent's context window sees a ~500-token report, not the raw 50K-token file dumps the worker reads during investigation.
+
+This mirrors Claude Code's `Task` tool pattern. Use it via natural delegation: *"delegation explore: find all uses of context.Background()"* or programmatically by prefixing any delegation goal.
 
 ---
 
@@ -244,8 +268,8 @@ internal/
   orchestrator/    # Execute(), classifier, HITL retry loop
   recommend/       # model-recommendation panel
   role/            # 6 roles (developer, sre, qa, pm, frontend, generalist)
-  skill/           # 125-skill registry
-  tool/            # 26-tool registry + built-in tools
+  skill/           # 240-skill registry
+  tool/            # 22-tool registry + built-in tools
   tracing/         # lightweight span tracer
 pkg/               # public interfaces (Tool, Skill, Role, Memory, Provider)
 proto/             # .proto definitions (hitl.proto is compiled)
@@ -277,7 +301,7 @@ go test ./...      # all 15 packages pass
 Server startup log:
 
 ```
-orchestrator initialized successfully — providers:1, roles:6, tools:26, skills:125
+orchestrator initialized successfully — providers:1, roles:6, tools:22, skills:240
 HITL gRPC server listening :50052  (max_retries=2)
 HTTP server listening :8080
 ```

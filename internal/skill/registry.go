@@ -221,6 +221,151 @@ func (r *Registry) RegisterBuiltin() error {
 		builtin.NewMarkdownTOCSkill(),
 		builtin.NewMarkdownStripSkill(),
 		builtin.NewMarkdownLinkExtractSkill(),
+
+		// ===== Catalog expansion batch (zero-AI, deterministic) =====
+
+		// barcodes.go — 6 skills
+		builtin.NewEAN13ValidateSkill(),
+		builtin.NewEAN8ValidateSkill(),
+		builtin.NewUPCAValidateSkill(),
+		builtin.NewISSNValidateSkill(),
+		builtin.NewVINValidateSkill(),
+		builtin.NewSWIFTBICValidateSkill(),
+
+		// code_metrics.go — 5 skills
+		builtin.NewLOCCountSkill(),
+		builtin.NewComplexityEstimateSkill(),
+		builtin.NewTODOExtractSkill(),
+		builtin.NewImportExtractSkill(),
+		builtin.NewFunctionSignatureExtractSkill(),
+
+		// compression.go — 6 skills
+		builtin.NewGzipCompressSkill(),
+		builtin.NewGzipDecompressSkill(),
+		builtin.NewZlibCompressSkill(),
+		builtin.NewZlibDecompressSkill(),
+		builtin.NewFlateCompressSkill(),
+		builtin.NewFlateDecompressSkill(),
+
+		// converters.go — 6 skills
+		builtin.NewCSVToMarkdownTableSkill(),
+		builtin.NewMarkdownTableToCSVSkill(),
+		builtin.NewJSONToMarkdownTableSkill(),
+		builtin.NewTSVToCSVSkill(),
+		builtin.NewCSVToTSVSkill(),
+		builtin.NewListToMarkdownSkill(),
+
+		// encoding_extended.go — 12 skills
+		builtin.NewBase58EncodeSkill(),
+		builtin.NewBase58DecodeSkill(),
+		builtin.NewBase62EncodeSkill(),
+		builtin.NewBase62DecodeSkill(),
+		builtin.NewBase85EncodeSkill(),
+		builtin.NewBase85DecodeSkill(),
+		builtin.NewPunycodeEncodeSkill(),
+		builtin.NewPunycodeDecodeSkill(),
+		builtin.NewQuotedPrintableEncodeSkill(),
+		builtin.NewQuotedPrintableDecodeSkill(),
+		builtin.NewURLSafeB64EncodeSkill(),
+		builtin.NewURLSafeB64DecodeSkill(),
+
+		// geo.go — 9 skills
+		builtin.NewHaversineDistanceSkill(),
+		builtin.NewLatlonValidateSkill(),
+		builtin.NewLatlonParseSkill(),
+		builtin.NewCountryAlpha2ToAlpha3Skill(),
+		builtin.NewCountryAlpha3ToAlpha2Skill(),
+		builtin.NewCountryNameToAlpha2Skill(),
+		builtin.NewCountryAlpha2ToNameSkill(),
+		builtin.NewCurrencyCodeLookupSkill(),
+		builtin.NewCurrencySymbolSkill(),
+
+		// jsonstruct.go — 7 skills
+		builtin.NewJSONFlattenSkill(),
+		builtin.NewJSONUnflattenSkill(),
+		builtin.NewJSONKeysSkill(),
+		builtin.NewJSONValuesSkill(),
+		builtin.NewJSONPathSkill(),
+		builtin.NewJSONPickSkill(),
+		builtin.NewJSONOmitSkill(),
+
+		// otp_crypto.go — 7 skills
+		builtin.NewTOTPGenerateSkill(),
+		builtin.NewHOTPGenerateSkill(),
+		builtin.NewOTPSecretGenerateSkill(),
+		builtin.NewRandomHexSkill(),
+		builtin.NewHMACForAlgorithmSkill(),
+		builtin.NewTimingSafeCompareSkill(),
+		builtin.NewHMACMD5Skill(),
+
+		// paths.go — 10 skills
+		builtin.NewFilepathNormalizeSkill(),
+		builtin.NewFilepathJoinSkill(),
+		builtin.NewFilepathDirSkill(),
+		builtin.NewFilepathBaseSkill(),
+		builtin.NewFilepathExtSkill(),
+		builtin.NewFilepathStemSkill(),
+		builtin.NewMIMEFromExtSkill(),
+		builtin.NewExtFromMIMESkill(),
+		builtin.NewPathIsAbsoluteSkill(),
+		builtin.NewPathIsRelativeSkill(),
+
+		// stats_extended.go — 4 skills
+		builtin.NewVarianceSkill(),
+		builtin.NewStddevSampleSkill(),
+		builtin.NewPercentileSkill(),
+		builtin.NewQuartileSkill(),
+
+		// string_algorithms.go — 10 skills
+		builtin.NewSoundexSkill(),
+		builtin.NewMetaphoneSkill(),
+		builtin.NewJaroSkill(),
+		builtin.NewJaroWinklerSkill(),
+		builtin.NewHammingDistanceSkill(),
+		builtin.NewLCSSkill(),
+		builtin.NewLCSSubstrSkill(),
+		builtin.NewNgramSkill(),
+		builtin.NewNgramFrequencySkill(),
+		builtin.NewRatcliffObershelpSkill(),
+
+		// sequences.go — 6 skills
+		builtin.NewRangeSkill(),
+		builtin.NewFibonacciSkill(),
+		builtin.NewArithmeticSequenceSkill(),
+		builtin.NewGeometricSequenceSkill(),
+		builtin.NewPrimesUptoSkill(),
+		builtin.NewCollatzSkill(),
+
+		// lookup_tables.go — 15 skills
+		builtin.NewISOCountryAlpha2ListSkill(),
+		builtin.NewISOCountryAlpha3ListSkill(),
+		builtin.NewISOCurrencyListSkill(),
+		builtin.NewISOLanguageAlpha2ListSkill(),
+		builtin.NewHTTPStatusAllSkill(),
+		builtin.NewMIMETypeCommonSkill(),
+		builtin.NewHTMLEntityCommonSkill(),
+		builtin.NewASCIITableSkill(),
+		builtin.NewUUIDNamespaceDNSSkill(),
+		builtin.NewUUIDNamespaceURLSkill(),
+		builtin.NewUUIDNamespaceOIDSkill(),
+		builtin.NewUUIDNamespaceX500Skill(),
+		builtin.NewUnixSignalListSkill(),
+		builtin.NewFileSignatureListSkill(),
+		builtin.NewEmojiShortcodeListSkill(),
+
+		// project.go — 12 skills (Claude-Code-style project exploration)
+		builtin.NewProjectStatusSkill(),
+		builtin.NewProjectStructureSkill(),
+		builtin.NewProjectLanguagesSkill(),
+		builtin.NewProjectDepsSkill(),
+		builtin.NewProjectEntryPointsSkill(),
+		builtin.NewProjectTestMapSkill(),
+		builtin.NewProjectTODOScanSkill(),
+		builtin.NewProjectGitLogSkill(),
+		builtin.NewProjectGitBranchesSkill(),
+		builtin.NewProjectIgnoreCheckSkill(),
+		builtin.NewProjectEnvCheckSkill(),
+		builtin.NewProjectExploreSkill(),
 	}
 
 	for _, skill := range builtinSkills {

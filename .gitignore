@@ -23,9 +23,11 @@ bin/
 *.test
 
 # =============================================================================
-# Runtime data (SQLite DBs, skill bundles, logs)
+# Runtime data (SQLite DBs, skill bundles, logs, task workspaces)
 # =============================================================================
 data/
+logs/
+tasks/
 *.db
 *.db-journal
 *.sqlite
@@ -67,12 +69,15 @@ benchmarks/last_report_level_4.txt
 /tmp/kyoci-l3-bench.db
 
 # =============================================================================
-# Local dev / scratch logs at repo root
+# Local dev / scratch (now lives under logs/<YYYY-MM-DD>/ via scripts/dev.sh)
 # =============================================================================
-backend.log
-frontend.log
-l3_benchmark_output.log
-l3_benchmark_pass_scenarios.txt
+# Legacy root-level redirects retained in case anyone runs the servers without
+# the dev script. New runs should go through scripts/dev.sh which writes to
+# logs/<YYYY-MM-DD>/ automatically.
+/backend.log
+/frontend.log
+/l3_benchmark_output.log
+/l3_benchmark_pass_scenarios.txt
 
 # Backups of config we don't want tracked
 *.backup
