@@ -451,6 +451,6 @@ func resultHasLessonRecorded(o *Orchestrator, t *testing.T, needle string) bool 
 	if o.reflectionEngine == nil {
 		return false
 	}
-	got := o.reflectionEngine.GetRelevantLessons(needle, 20)
+	got := o.reflectionEngine.GetRelevantLessons(context.Background(), needle, 20)
 	return strings.Contains(got, needle)
 }

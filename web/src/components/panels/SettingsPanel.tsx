@@ -8,6 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { api, BackendUnreachable } from "@/lib/api";
+import { toastApiError } from "@/lib/api/toast";
 import type { ProviderConfigDTO } from "@/lib/types";
 import { springs } from "@/lib/motion";
 import { toast } from "sonner";
@@ -30,7 +31,7 @@ export function SettingsPanel() {
         const first = Object.keys(r.providers).sort()[0];
         if (first) setSelected(first);
       })
-      .catch((e) => toast.error("Load failed: " + e.message));
+      .catch((e) => toastApiError(e, { action: "Load settings" }));
   }, []);
 
   const names = Object.keys(configs).sort();
@@ -57,14 +58,10 @@ export function SettingsPanel() {
       const r = await api.testConnection(selected);
       if (r.available) toast.success(`${selected}: connection OK`);
       else toast.error(`${selected}: ${r.error || "unavailable"}`);
-    } catch (e: any) {
-      if (e instanceof BackendUnreachable) {
-        toast.error("Backend unreachable", {
-          description: "Start the Go server: `go run ./cmd/server`.",
-        });
-      } else {
-        toast.error(e.message);
-      }
+    } catch (e) {
+      // toastApiError maps BackendUnreachable → actionable hint automatically.
+      void BackendUnreachable;
+      toastApiError(e, { action: `Test ${selected}` });
     } finally {
       setTesting(false);
     }
@@ -80,12 +77,8 @@ export function SettingsPanel() {
       toast.success(`${selected}: saved`, {
         description: "Restart the server for changes to take effect.",
       });
-    } catch (e: any) {
-      if (e instanceof BackendUnreachable) {
-        toast.error("Backend unreachable");
-      } else {
-        toast.error("Save failed: " + e.message);
-      }
+    } catch (e) {
+      toastApiError(e, { action: `Save ${selected}` });
     } finally {
       setSaving(false);
     }

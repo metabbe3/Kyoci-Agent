@@ -221,7 +221,7 @@ func (c *Context) SmartCompact(maxTokens int) {
 			// Just note that a tool result was received
 			toolCallCount++
 		case kyoci.RoleUser:
-			summary.WriteString("- User: " + truncateForSummary(msg.Content, 100) + "\n")
+			summary.WriteString("- User: " + truncateStr(msg.Content, 100) + "\n")
 		}
 	}
 	summary.WriteString(fmt.Sprintf("(%d tool calls summarized)\n", toolCallCount))
@@ -239,14 +239,6 @@ func (c *Context) SmartCompact(maxTokens int) {
 	compacted = append(compacted, toKeep...)
 
 	c.messages = compacted
-}
-
-// truncateForSummary shortens a string for use in compaction summaries.
-func truncateForSummary(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen] + "..."
 }
 
 // Reset clears all messages from the context for a new conversation.

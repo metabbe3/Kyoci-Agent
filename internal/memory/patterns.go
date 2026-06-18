@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -68,7 +69,7 @@ func NewPatternDetector(ltm *LongTermMemory, cfg SkillGeneratorConfig, logger *s
 // CheckAndGenerate analyzes recent experiences and auto-creates skills
 // when patterns are detected. Called after each successful task.
 // Returns the name of the skill generated (if any), or empty string.
-func (pd *PatternDetector) CheckAndGenerate(rec ExperienceRecord) string {
+func (pd *PatternDetector) CheckAndGenerate(ctx context.Context, rec ExperienceRecord) string {
 	if !rec.Success {
 		return ""
 	}
@@ -86,7 +87,7 @@ func (pd *PatternDetector) CheckAndGenerate(rec ExperienceRecord) string {
 	}
 
 	// Find similar successful experiences
-	similar := pd.findSimilarExperiences(keywords, rec.ToolsUsed, 10)
+	similar := pd.findSimilarExperiences(ctx, keywords, rec.ToolsUsed, 10)
 
 	// Check if we have enough similar tasks to warrant a skill
 	if len(similar) < pd.config.MinPatternCount {
@@ -122,20 +123,20 @@ func (pd *PatternDetector) CheckAndGenerate(rec ExperienceRecord) string {
 		"path", skillPath)
 
 	// Also store in L3 memory as a lesson
-	pd.storeLesson(skillName, rec, similar)
+	pd.storeLesson(ctx, skillName, rec, similar)
 
 	return skillName
 }
 
 // findSimilarExperiences searches L3 for tasks with overlapping keywords + tools.
-func (pd *PatternDetector) findSimilarExperiences(keywords []string, tools []string, limit int) []ExperienceRecord {
+func (pd *PatternDetector) findSimilarExperiences(ctx context.Context, keywords []string, tools []string, limit int) []ExperienceRecord {
 	// Search using top keyword
 	query := strings.Join(keywords[:min(3, len(keywords))], " ")
 	if query == "" {
 		return nil
 	}
 
-	entries, err := pd.storage.Recall(query, limit, kyoci.MemoryLongTerm)
+	entries, err := pd.storage.Recall(ctx, query, limit, kyoci.MemoryLongTerm)
 	if err != nil {
 		return nil
 	}
@@ -226,7 +227,7 @@ func (pd *PatternDetector) generateSkillContent(name string, latest ExperienceRe
 }
 
 // storeLesson stores the skill generation event as a lesson in L3.
-func (pd *PatternDetector) storeLesson(skillName string, rec ExperienceRecord, similar []ExperienceRecord) {
+func (pd *PatternDetector) storeLesson(ctx context.Context, skillName string, rec ExperienceRecord, similar []ExperienceRecord) {
 	lesson := fmt.Sprintf("Skill '%s' auto-generated: %d similar tasks detected. Tools: %s",
 		skillName, len(similar), strings.Join(rec.ToolsUsed, ", "))
 
@@ -235,7 +236,7 @@ func (pd *PatternDetector) storeLesson(skillName string, rec ExperienceRecord, s
 		"skill_name": skillName,
 	}
 
-	_, err := pd.storage.Store(lesson, kyoci.MemoryLongTerm, metadata)
+	_, err := pd.storage.Store(ctx, lesson, kyoci.MemoryLongTerm, metadata)
 	if err != nil {
 		pd.logger.Warn("failed to store skill lesson", "error", err)
 	}

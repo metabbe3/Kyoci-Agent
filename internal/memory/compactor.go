@@ -140,7 +140,7 @@ func (c *Compactor) Compact(ctx context.Context, maxTokens int) (*CompactorStats
 		c.logger.Warn("failed to generate summary, storing entries individually", "error", err)
 		// Fallback: store entries individually
 		for _, entry := range entriesToCompact {
-			_, err := c.longTerm.Store(entry.Content, kyoci.MemoryLongTerm, entry.Metadata)
+			_, err := c.longTerm.Store(ctx, entry.Content, kyoci.MemoryLongTerm, entry.Metadata)
 			if err != nil {
 				c.logger.Error("failed to store entry in long-term", "id", entry.ID, "error", err)
 				continue
@@ -158,7 +158,7 @@ func (c *Compactor) Compact(ctx context.Context, maxTokens int) (*CompactorStats
 			"compacted": "true",
 			"entry_count": fmt.Sprintf("%d", len(entriesToCompact)),
 		}
-		_, err := c.longTerm.Store(summary, kyoci.MemoryLongTerm, metadata)
+		_, err := c.longTerm.Store(ctx, summary, kyoci.MemoryLongTerm, metadata)
 		if err != nil {
 			c.logger.Error("failed to store summary in long-term", "error", err)
 		} else {

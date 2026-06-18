@@ -59,7 +59,7 @@ func TestOpenAIClientCreation(t *testing.T) {
 		Timeout:      60 * time.Second,
 	}
 
-	client, err := NewOpenAIClient("openai", config)
+	client, err := newTestClient("openai", config)
 	if err != nil {
 		t.Fatalf("Failed to create client: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestOpenAIClientMissingBaseURL(t *testing.T) {
 		DefaultModel: "gpt-4",
 	}
 
-	_, err := NewOpenAIClient("openai", config)
+	_, err := newTestClient("openai", config)
 	if err == nil {
 		t.Error("Expected error for missing base URL")
 	}
@@ -95,7 +95,7 @@ func TestOpenAIClientMissingAPIKey(t *testing.T) {
 		DefaultModel: "gpt-4",
 	}
 
-	_, err := NewOpenAIClient("openai", config)
+	_, err := newTestClient("openai", config)
 	if err == nil {
 		t.Error("Expected error for missing API key")
 	}
@@ -111,7 +111,7 @@ func TestOpenAIClientOllamaNoAPIKey(t *testing.T) {
 		DefaultModel: "llama2",
 	}
 
-	client, err := NewOpenAIClient("ollama", config)
+	client, err := newTestClient("ollama", config)
 	if err != nil {
 		t.Fatalf("Ollama should not require API key: %v", err)
 	}
@@ -172,7 +172,7 @@ func TestProviderFactory(t *testing.T) {
 
 func TestProviderFactoryAnthropicConfig(t *testing.T) {
 	config := kyoci.ProviderConfig{
-		BaseURL:      "https://api.anthropic.com/v1",
+		BaseURL:      "https://api.anthropic.com",
 		APIKey:       "test-key",
 		DefaultModel: "claude-3-opus",
 	}
@@ -182,16 +182,18 @@ func TestProviderFactoryAnthropicConfig(t *testing.T) {
 		t.Fatalf("Failed to create Anthropic provider: %v", err)
 	}
 
-	// Verify it's an OpenAIClient with x-api-key configuration
-	if client, ok := provider.(*OpenAIClient); ok {
-		if !client.useXAPIKey {
-			t.Error("Anthropic provider should use x-api-key header")
-		}
-		if client.anthropicVersion != "2023-06-01" {
-			t.Errorf("Expected anthropic-version '2023-06-01', got '%s'", client.anthropicVersion)
-		}
-	} else {
-		t.Error("Provider should be an OpenAIClient")
+	// "anthropic" (and any base URL containing "/anthropic") now routes to the
+	// real Anthropic Messages client (POST /v1/messages), not the OpenAI client.
+	ac, ok := provider.(*AnthropicClient)
+	if !ok {
+		t.Fatalf("Anthropic provider should be an *AnthropicClient, got %T", provider)
+	}
+	if ac.Name() != "anthropic" {
+		t.Errorf("Anthropic provider name = %q, want anthropic", ac.Name())
+	}
+	// A trailing "/v1" in the base URL is trimmed (the client appends /v1/messages).
+	if got := ac.config.BaseURL; got != "https://api.anthropic.com" {
+		t.Errorf("Anthropic base URL = %q, want https://api.anthropic.com (no /v1)", got)
 	}
 }
 
@@ -505,7 +507,7 @@ func TestCompleteRequest(t *testing.T) {
 		Timeout:      10 * time.Second,
 	}
 
-	client, err := NewOpenAIClient("openai", config)
+	client, err := newTestClient("openai", config)
 	if err != nil {
 		t.Fatalf("Failed to create client: %v", err)
 	}
@@ -553,7 +555,7 @@ func TestCompleteRequestError(t *testing.T) {
 		Timeout:      10 * time.Second,
 	}
 
-	client, err := NewOpenAIClient("openai", config)
+	client, err := newTestClient("openai", config)
 	if err != nil {
 		t.Fatalf("Failed to create client: %v", err)
 	}
@@ -599,7 +601,7 @@ func TestStreamingRequest(t *testing.T) {
 		Timeout:      10 * time.Second,
 	}
 
-	client, err := NewOpenAIClient("openai", config)
+	client, err := newTestClient("openai", config)
 	if err != nil {
 		t.Fatalf("Failed to create client: %v", err)
 	}
@@ -661,7 +663,7 @@ func TestRateLimitHandling(t *testing.T) {
 		MaxRetries:   1,
 	}
 
-	client, err := NewOpenAIClient("openai", config)
+	client, err := newTestClient("openai", config)
 	if err != nil {
 		t.Fatalf("Failed to create client: %v", err)
 	}
@@ -700,7 +702,7 @@ func TestContextCancellation(t *testing.T) {
 		Timeout:      10 * time.Second,
 	}
 
-	client, err := NewOpenAIClient("openai", config)
+	client, err := newTestClient("openai", config)
 	if err != nil {
 		t.Fatalf("Failed to create client: %v", err)
 	}
@@ -738,7 +740,7 @@ func TestConvertMessages(t *testing.T) {
 		DefaultModel: "gpt-4",
 	}
 
-	client, err := NewOpenAIClient("openai", config)
+	client, err := newTestClient("openai", config)
 	if err != nil {
 		t.Fatalf("Failed to create client: %v", err)
 	}
@@ -775,7 +777,7 @@ func TestConvertTools(t *testing.T) {
 		DefaultModel: "gpt-4",
 	}
 
-	client, err := NewOpenAIClient("openai", config)
+	client, err := newTestClient("openai", config)
 	if err != nil {
 		t.Fatalf("Failed to create client: %v", err)
 	}
@@ -843,7 +845,7 @@ func TestRetryLogic(t *testing.T) {
 		MaxRetries:   5,
 	}
 
-	client, err := NewOpenAIClient("openai", config)
+	client, err := newTestClient("openai", config)
 	if err != nil {
 		t.Fatalf("Failed to create client: %v", err)
 	}

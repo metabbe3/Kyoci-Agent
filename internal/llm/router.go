@@ -2,11 +2,11 @@ package llm
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"sync"
 	"time"
 
+	"github.com/metabbe3/Kyoci-Agent/internal/apperr"
 	kyoci "github.com/metabbe3/Kyoci-Agent/pkg"
 )
 
@@ -87,13 +87,13 @@ func (r *Router) Route(ctx context.Context, req kyoci.CompletionRequest, preferr
 
 	availableProviders := r.registry.GetAvailable()
 	if len(availableProviders) == 0 {
-		return nil, fmt.Errorf("no available providers")
+		return nil, apperr.ErrNoAvailableProviders
 	}
 
 	// Select provider based on strategy
 	provider, err := r.selectProvider(availableProviders, preferredProvider)
 	if err != nil {
-		return nil, fmt.Errorf("failed to select provider: %w", err)
+		return nil, apperr.Wrap("llm.select_failed", apperr.KindUnavailable, err, "failed to select provider")
 	}
 
 	// Execute request
@@ -104,7 +104,7 @@ func (r *Router) Route(ctx context.Context, req kyoci.CompletionRequest, preferr
 	if err != nil {
 		// Record failure
 		r.recordFailure(provider.Name())
-		return nil, fmt.Errorf("provider %s: %w", provider.Name(), err)
+		return nil, apperr.Wrapf("llm.provider_failed", apperr.KindUnavailable, err, "provider %s", provider.Name())
 	}
 
 	// Record success metrics
@@ -123,13 +123,13 @@ func (r *Router) Route(ctx context.Context, req kyoci.CompletionRequest, preferr
 func (r *Router) RouteStream(ctx context.Context, req kyoci.CompletionRequest, preferredProvider string) (<-chan kyoci.StreamChunk, error) {
 	availableProviders := r.registry.GetAvailable()
 	if len(availableProviders) == 0 {
-		return nil, fmt.Errorf("no available providers")
+		return nil, apperr.ErrNoAvailableProviders
 	}
 
 	// Select provider based on strategy
 	provider, err := r.selectProvider(availableProviders, preferredProvider)
 	if err != nil {
-		return nil, fmt.Errorf("failed to select provider: %w", err)
+		return nil, apperr.Wrap("llm.select_failed", apperr.KindUnavailable, err, "failed to select provider")
 	}
 
 	// Execute streaming request
@@ -137,7 +137,7 @@ func (r *Router) RouteStream(ctx context.Context, req kyoci.CompletionRequest, p
 	ch, err := provider.Stream(ctx, req)
 	if err != nil {
 		r.recordFailure(provider.Name())
-		return nil, fmt.Errorf("provider %s: %w", provider.Name(), err)
+		return nil, apperr.Wrapf("llm.provider_failed", apperr.KindUnavailable, err, "provider %s", provider.Name())
 	}
 
 	// Create wrapped channel to track completion
@@ -191,7 +191,7 @@ func (r *Router) selectProvider(providers []kyoci.Provider, preferredProvider st
 // selectFastest selects the provider with lowest average latency.
 func (r *Router) selectFastest(providers []kyoci.Provider) (kyoci.Provider, error) {
 	if len(providers) == 0 {
-		return nil, fmt.Errorf("no providers available")
+		return nil, apperr.ErrNoProviders
 	}
 
 	var fastest kyoci.Provider
@@ -220,7 +220,7 @@ func (r *Router) selectFastest(providers []kyoci.Provider) (kyoci.Provider, erro
 // selectCheapest selects the provider with lowest average cost.
 func (r *Router) selectCheapest(providers []kyoci.Provider) (kyoci.Provider, error) {
 	if len(providers) == 0 {
-		return nil, fmt.Errorf("no providers available")
+		return nil, apperr.ErrNoProviders
 	}
 
 	var cheapest kyoci.Provider
@@ -249,7 +249,7 @@ func (r *Router) selectCheapest(providers []kyoci.Provider) (kyoci.Provider, err
 // selectFallback tries preferred provider, then falls back to others.
 func (r *Router) selectFallback(providers []kyoci.Provider, preferredProvider string) (kyoci.Provider, error) {
 	if len(providers) == 0 {
-		return nil, fmt.Errorf("no providers available")
+		return nil, apperr.ErrNoProviders
 	}
 
 	// Check if preferred provider exists and is available
@@ -267,7 +267,7 @@ func (r *Router) selectFallback(providers []kyoci.Provider, preferredProvider st
 // selectRoundRobin selects the next provider in round-robin order.
 func (r *Router) selectRoundRobin(providers []kyoci.Provider) (kyoci.Provider, error) {
 	if len(providers) == 0 {
-		return nil, fmt.Errorf("no providers available")
+		return nil, apperr.ErrNoProviders
 	}
 
 	idx := r.roundRobinIdx % len(providers)

@@ -194,8 +194,8 @@ Before reporting completion, verify:
 [ ] Cyclomatic complexity under 10 per function
 `
 
-// RoleDefaults contains the default configuration for all supported roles.
-var RoleDefaults = map[string]RoleConfig{
+// roleDefaults contains the default configuration for all supported roles.
+var roleDefaults = map[string]RoleConfig{
 	// ------------------------------------------------------------------
 	// DEVELOPER — Autonomous code execution
 	// ------------------------------------------------------------------
@@ -293,7 +293,7 @@ Keep responses SHORT. Interpret data, do not paste raw output. Report key findin
 		},
 		PreferredProvider: "",
 		MaxIterations:     12,
-		Model:             "gemma4:12b",
+		Model: "", // empty = use the provider's default_model (decoupled from a specific model)
 	},
 
 	// ------------------------------------------------------------------
@@ -527,7 +527,7 @@ Keep responses SHORT. Execute. Report what you built.`,
 		},
 		PreferredProvider: "",
 		MaxIterations:     12,
-		Model:             "gemma4:12b",
+		Model: "", // empty = use the provider's default_model (decoupled from a specific model)
 	},
 
 	// ------------------------------------------------------------------
@@ -599,6 +599,6 @@ Keep responses SHORT. Execute. Verify. Report results.`,
 		},
 		PreferredProvider: "",
 		MaxIterations:     10,
-		Model:             "gemma4:12b",
+		Model: "", // empty = use the provider's default_model (decoupled from a specific model)
 	},
 }

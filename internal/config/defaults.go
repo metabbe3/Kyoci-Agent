@@ -4,10 +4,10 @@ package config
 // Provider Defaults
 // ==============================================================================
 
-// ProviderDefaults contains the default configuration for all supported providers.
+// providerDefaults contains the default configuration for all supported providers.
 // These defaults include base URLs, recommended models, timeouts, and retry settings.
 // All providers are disabled by default; users must explicitly enable them and add API keys.
-var ProviderDefaults = map[string]ProviderConfig{
+var providerDefaults = map[string]ProviderConfig{
 	"openai": {
 		BaseURL:      "https://api.openai.com/v1",
 		APIKey:       "",

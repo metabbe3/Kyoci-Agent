@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { api } from "@/lib/api";
+import { toastApiError } from "@/lib/api/toast";
 import type { ProviderSummary, ProviderConfigDTO } from "@/lib/types";
 import { springs, staggerContainer, staggerItem } from "@/lib/motion";
 import { cn } from "@/lib/utils";
@@ -101,8 +102,8 @@ export function ProvidersPanel() {
         return next;
       });
       refresh();
-    } catch (e: any) {
-      toast.error("Save failed", { description: e.message });
+    } catch (e) {
+      toastApiError(e, { action: `Save ${name}`, detail: "Edits not applied." });
     }
   };
 
@@ -117,8 +118,8 @@ export function ProvidersPanel() {
       } else {
         toast.error(`${name} not reachable`, { description: r.error });
       }
-    } catch (e: any) {
-      toast.error("Test failed", { description: e.message });
+    } catch (e) {
+      toastApiError(e, { action: `Test ${name}` });
     } finally {
       setTesting(null);
     }

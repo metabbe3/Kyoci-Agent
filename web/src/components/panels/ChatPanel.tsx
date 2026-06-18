@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { useSearchParams, Link } from "react-router-dom";
 import { motion, AnimatePresence } from "motion/react";
-import { api, chatStream, BackendUnreachable } from "@/lib/api";
+import { api } from "@/lib/api";
+import { useChatStream, type ChatTurn } from "@/hooks/useChatStream";
 import type { ChatMessage, ProviderSummary, UploadedFile } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -34,7 +35,7 @@ import { VoiceInput } from "@/components/VoiceInput";
 import { FileAttach, humanSize } from "@/components/FileAttach";
 import { springs, staggerContainer, staggerItem } from "@/lib/motion";
 
-type Bubble = { role: "user" | "assistant"; content: string; error?: boolean };
+type Bubble = ChatTurn;
 
 const ROLES: { role: Role; abbr: string }[] = [
   { role: "generalist", abbr: "GEN" },
@@ -76,9 +77,22 @@ export function ChatPanel() {
   const [bubbles, setBubbles] = useState<Bubble[]>([]);
   const [input, setInput] = useState("");
   const [attachments, setAttachments] = useState<UploadedFile[]>([]);
-  const [streaming, setStreaming] = useState(false);
-  const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  // Streaming lifecycle (abort controller, SSE loop, error mapping) lives in
+  // the hook; the panel only supplies how to mutate its bubbles.
+  const { streaming, send: streamSend, abort } = useChatStream({
+    onTurnStart: (user) =>
+      setBubbles((b) => [...b, user, { role: "assistant", content: "" }]),
+    onUpdateLast: (update) =>
+      setBubbles((b) => {
+        if (b.length === 0) return b;
+        const next = [...b];
+        next[next.length - 1] = update(next[next.length - 1]);
+        return next;
+      }),
+    onDropLast: () => setBubbles((b) => b.slice(0, -1)),
+  });
 
   // Sync URL when mode/role change (so user can share/bookmark specific states)
   useEffect(() => {
@@ -117,79 +131,22 @@ export function ChatPanel() {
     }
 
     const userMsg: Bubble = { role: "user", content: text };
-    const assistantMsg: Bubble = { role: "assistant", content: "" };
-    setBubbles((b) => [...b, userMsg, assistantMsg]);
-    setInput("");
-    setAttachments([]);
-    setStreaming(true);
-
+    // History includes everything said so far plus this new user turn. Built
+    // before clearing input/attachments so the request reflects what was sent.
     const history: ChatMessage[] = [...bubbles, userMsg].map((b) => ({
       role: b.role,
       content: b.content,
     }));
+    setInput("");
+    setAttachments([]);
 
-    const ac = new AbortController();
-    abortRef.current = ac;
-
-    try {
-      const stream = chatStream(
-        {
-          mode,
-          provider: mode === "chat" ? provider : undefined,
-          model: mode === "chat" && model ? model : undefined,
-          messages: history,
-          files: mode === "agent" && attachments.length > 0 ? attachments : undefined,
-        },
-        ac.signal
-      );
-
-      for await (const chunk of stream) {
-        if (chunk.error) {
-          setBubbles((b) => {
-            const next = [...b];
-            next[next.length - 1] = {
-              ...next[next.length - 1],
-              error: true,
-              content: next[next.length - 1].content || chunk.error!,
-            };
-            return next;
-          });
-          break;
-        }
-        if (chunk.content) {
-          setBubbles((b) => {
-            const next = [...b];
-            const last = next[next.length - 1];
-            next[next.length - 1] = { ...last, content: last.content + chunk.content };
-            return next;
-          });
-        }
-        if (chunk.done) break;
-      }
-    } catch (e: any) {
-      if (e instanceof DOMException && e.name === "AbortError") {
-        // user cancelled
-      } else if (e instanceof BackendUnreachable) {
-        toast.error("Backend unreachable", {
-          description: "Start the Go server: `go run ./cmd/server`.",
-        });
-        setBubbles((b) => b.slice(0, -1));
-      } else {
-        setBubbles((b) => {
-          const next = [...b];
-          next[next.length - 1] = { role: "assistant", content: `Error: ${e.message}`, error: true };
-          return next;
-        });
-      }
-    } finally {
-      setStreaming(false);
-      abortRef.current = null;
-    }
-  };
-
-  const abort = () => {
-    abortRef.current?.abort();
-    setStreaming(false);
+    await streamSend(text, {
+      mode,
+      provider,
+      model,
+      history,
+      files: attachments,
+    });
   };
 
   const onKeyDown = (e: React.KeyboardEvent) => {

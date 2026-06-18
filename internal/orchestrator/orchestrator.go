@@ -9,6 +9,7 @@ import (
 
 	kyoci "github.com/metabbe3/Kyoci-Agent/pkg"
 	"github.com/metabbe3/Kyoci-Agent/internal/agent"
+	"github.com/metabbe3/Kyoci-Agent/internal/apperr"
 	"github.com/metabbe3/Kyoci-Agent/internal/config"
 	"github.com/metabbe3/Kyoci-Agent/internal/llm"
 	"github.com/metabbe3/Kyoci-Agent/internal/mcp"
@@ -248,7 +249,7 @@ func (o *Orchestrator) Execute(ctx context.Context, task string, roleType kyoci.
 	o.mu.RUnlock()
 
 	if !started {
-		return nil, fmt.Errorf("orchestrator not started — call Start() first")
+		return nil, apperr.ErrNotStarted
 	}
 
 	// Start tracing span
@@ -303,7 +304,7 @@ func (o *Orchestrator) ExecuteStream(ctx context.Context, task string, roleType 
 	o.mu.RUnlock()
 
 	if !started {
-		return nil, fmt.Errorf("orchestrator not started — call Start() first")
+		return nil, apperr.ErrNotStarted
 	}
 
 	ctx, span := o.tracer.StartSpan(ctx, "Orchestrator.ExecuteStream")
@@ -347,7 +348,7 @@ func (o *Orchestrator) ExecuteDirect(ctx context.Context, task string, systemPro
 	o.mu.RUnlock()
 
 	if !started {
-		return nil, fmt.Errorf("orchestrator not started — call Start() first")
+		return nil, apperr.ErrNotStarted
 	}
 
 	ctx, span := o.tracer.StartSpan(ctx, "Orchestrator.ExecuteDirect")
@@ -460,34 +461,6 @@ func (o *Orchestrator) Shutdown() error {
 
 	o.logger.Info("orchestrator shutdown complete")
 	return nil
-}
-
-// GetTracer returns the tracer instance.
-func (o *Orchestrator) GetTracer() *tracing.Tracer {
-	return o.tracer
-}
-
-// GetLogger returns the logger instance.
-func (o *Orchestrator) GetLogger() *slog.Logger {
-	return o.logger
-}
-
-// GetConfig returns the current configuration.
-func (o *Orchestrator) GetConfig() *config.Config {
-	return o.config
-}
-
-// GetProfileStore returns the profile store for external access.
-func (o *Orchestrator) GetProfileStore() *memory.ProfileStore {
-	return o.profileStore
-}
-
-// GetExperienceStats returns aggregate experience statistics.
-func (o *Orchestrator) GetExperienceStats() memory.ExperienceStats {
-	if o.experienceEngine == nil {
-		return memory.ExperienceStats{}
-	}
-	return o.experienceEngine.GetStats()
 }
 
 // GetProviderRegistry returns the LLM provider registry for direct provider

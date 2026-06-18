@@ -42,7 +42,7 @@ func Recommend(specs *hardware.Specs) *Result {
 	result := &Result{}
 
 	// Walk tiers; classify each as fits/tight/slow/too_big relative to RAM.
-	for _, t := range Tiers {
+	for _, t := range tiers {
 		verdict, reason := classify(t, ram)
 		result.Local = append(result.Local, Pick{
 			Model:       t.Model,
@@ -56,7 +56,7 @@ func Recommend(specs *hardware.Specs) *Result {
 
 	// Recommended = largest tier that fits comfortably.
 	bestIdx := -1
-	for i := range Tiers {
+	for i := range tiers {
 		if result.Local[i].Verdict == "fits" || result.Local[i].Verdict == "tight" {
 			bestIdx = i
 		}
@@ -126,7 +126,7 @@ func summary(specs *hardware.Specs, bestIdx int) string {
 	if bestIdx < 0 {
 		return "Detected " + chip + " with " + itoa(ram) + "GB. No local Ollama model fits comfortably — consider cloud."
 	}
-	return "Detected " + chip + " with " + itoa(ram) + "GB. Best local pick: " + Tiers[bestIdx].Model + "."
+	return "Detected " + chip + " with " + itoa(ram) + "GB. Best local pick: " + tiers[bestIdx].Model + "."
 }
 
 // itoa avoids importing strconv for a single call.

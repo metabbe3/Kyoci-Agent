@@ -10,17 +10,22 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/signal"
-	"syscall"
 	"time"
 
-	kyoci "github.com/metabbe3/Kyoci-Agent/pkg"
+	"github.com/metabbe3/Kyoci-Agent/internal/agentgrpc"
+	"github.com/metabbe3/Kyoci-Agent/internal/apperr"
 	"github.com/metabbe3/Kyoci-Agent/internal/config"
 	"github.com/metabbe3/Kyoci-Agent/internal/dashboard"
 	"github.com/metabbe3/Kyoci-Agent/internal/gateway"
 	"github.com/metabbe3/Kyoci-Agent/internal/hitl"
+	"github.com/metabbe3/Kyoci-Agent/internal/observability"
 	"github.com/metabbe3/Kyoci-Agent/internal/orchestrator"
+	kyoci "github.com/metabbe3/Kyoci-Agent/pkg"
 )
+
+// version is the build version reported by /version and /health. Override at
+// build time via -ldflags "-X main.version=...".
+var version = "5.0.0"
 
 // Server wraps the orchestrator with HTTP handlers.
 type Server struct {
@@ -102,14 +107,14 @@ func (s *Server) handleExecute(w http.ResponseWriter, r *http.Request) {
 
 	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"failed to read body: %s"}`, err), http.StatusBadRequest)
+		apperr.WriteHTTPError(w, http.StatusBadRequest, "failed to read body: "+err.Error())
 		return
 	}
 	defer r.Body.Close()
 
 	var req TaskRequest
 	if err := json.Unmarshal(body, &req); err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"invalid JSON: %s"}`, err), http.StatusBadRequest)
+		apperr.WriteHTTPError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}
 
@@ -246,14 +251,14 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	// Read body
 	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"failed to read body: %s"}`, err), http.StatusBadRequest)
+		apperr.WriteHTTPError(w, http.StatusBadRequest, "failed to read body: "+err.Error())
 		return
 	}
 	defer r.Body.Close()
 
 	var req TaskRequest
 	if err := json.Unmarshal(body, &req); err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"invalid JSON: %s"}`, err), http.StatusBadRequest)
+		apperr.WriteHTTPError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}
 
@@ -312,7 +317,31 @@ func main() {
 	}
 	setupLogger(logLevelStr)
 
-	slog.Info("starting Kyoci Agent v5")
+	// Initialize observability (OpenTelemetry traces + metrics, Prometheus
+	// /metrics). OFF by default — enabled via env vars so the benchmark suite
+	// (which does not set them) incurs zero exporter overhead. otelShutdown
+	// flushes providers after the explicit component shutdown below (deferred
+	// defers run last, i.e. after the inline shutdown sequence returns).
+	otelShutdown, otelErr := observability.Setup(context.Background(), observability.Config{
+		OTLPEndpoint:   os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
+		ServiceName:    "kyoci-agent",
+		ServiceVersion: version,
+		TracesEnabled:  os.Getenv("KYOCI_OTEL_TRACES") == "1",
+		MetricsEnabled: os.Getenv("KYOCI_OTEL_METRICS") == "1",
+	})
+	if otelErr != nil {
+		slog.Warn("observability setup failed; continuing without telemetry", "error", otelErr)
+	}
+	defer func() {
+		if otelShutdown != nil {
+			_ = otelShutdown(context.Background())
+		}
+	}()
+
+	slog.Info("starting Kyoci Agent v5", "version", version)
+
+	// started anchors uptime reporting for the optional AgentService gRPC API.
+	started := time.Now()
 
 	// Load configuration
 	slog.Info("loading configuration", "path", *configPath)
@@ -376,12 +405,37 @@ func main() {
 		slog.Info("HITL gRPC server disabled (set hitl.enabled=true to enable)")
 	}
 
+	// Start the AgentService gRPC server (Execute/ExecuteStream/GetStatus) if
+	// configured. Default-off: server.agent_grpc_port <= 0 means the server is
+	// NOT started, so the HTTP API and the benchmark suite are unaffected. When
+	// enabled, it runs alongside the HTTP server on its own port and delegates
+	// to the same orchestrator.
+	var agentGRPCServer *agentgrpc.Server
+	if cfg.Server.AgentGRPCPort > 0 {
+		backend := agentgrpc.NewOrchestratorBackend(orch, version, started)
+		agentGRPCServer = agentgrpc.NewServer(backend, version, slog.Default())
+		agentAddr := fmt.Sprintf(":%d", cfg.Server.AgentGRPCPort)
+		agentLn, err := net.Listen("tcp", agentAddr)
+		if err != nil {
+			slog.Error("failed to bind AgentService gRPC listener", "addr", agentAddr, "error", err)
+			os.Exit(1)
+		}
+		go func() {
+			if err := agentGRPCServer.Serve(agentLn); err != nil {
+				slog.Error("AgentService gRPC server stopped", "error", err)
+			}
+		}()
+		slog.Info("AgentService gRPC server listening", "addr", agentAddr)
+	}
+
 	// Create HTTP server
 	server := NewServer(orch, cfg, *configPath, addr)
 	mux := server.Routes()
+	// Debug/health endpoints: /healthz /readyz /metrics /version /debug/pprof.
+	observability.MountDebug(mux, version, nil)
 	httpServer := &http.Server{
 		Addr:         addr,
-		Handler:      mux,
+		Handler:      observability.HTTPMiddleware(mux, slog.Default()),
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 360 * time.Second, // 6 min — must exceed 5 min task timeout
 		IdleTimeout:  120 * time.Second,
@@ -422,38 +476,44 @@ func main() {
 	// Print startup banner
 	printBanner(addr, cfg)
 
-	// Wait for shutdown signal
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	sig := <-quit
-
-	slog.Info("shutdown signal received", "signal", sig.String())
-
-	// Stop Telegram gateway first
-	if tgCancel != nil {
-		slog.Info("stopping Telegram gateway")
-		tgCancel()
-		time.Sleep(1 * time.Second) // Let polling goroutine finish
+	// Graceful lifecycle: SIGINT/SIGTERM-driven, ordered, per-component
+	// timeout-bounded shutdown via observability.Manager (replaces the former
+	// inline sequence). Components are added in the reverse of the desired
+	// shutdown order — Manager shuts down in reverse-add order, so this yields
+	// telegram → http → orchestrator → hitl-grpc, matching the original sequence.
+	// OTel providers flush via the deferred otelShutdown after components stop.
+	mgr := observability.NewManager(slog.Default(), nil)
+	mgr.Add("hitl-grpc", 10*time.Second, func(context.Context) error {
+		if hitlServer != nil {
+			hitlServer.GracefulStop()
+		}
+		return nil
+	})
+	mgr.Add("agent-grpc", 10*time.Second, func(context.Context) error {
+		if agentGRPCServer != nil {
+			agentGRPCServer.GracefulStop()
+		}
+		return nil
+	})
+	mgr.Add("orchestrator", 15*time.Second, func(context.Context) error {
+		return orch.Shutdown()
+	})
+	mgr.Add("http", 10*time.Second, httpServer.Shutdown)
+	mgr.Add("telegram", 5*time.Second, func(ctx context.Context) error {
+		if tgCancel != nil {
+			tgCancel()
+		}
+		if tgGateway != nil {
+			return tgGateway.Stop(ctx)
+		}
+		return nil
+	})
+	if err := mgr.Run(context.Background(), func(ctx context.Context) error {
+		<-ctx.Done() // block until SIGINT/SIGTERM (Manager installs the handler)
+		return nil
+	}); err != nil {
+		slog.Error("shutdown completed with error", "error", err)
 	}
-
-	// Graceful HTTP shutdown
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer shutdownCancel()
-
-	if err := httpServer.Shutdown(shutdownCtx); err != nil {
-		slog.Error("server forced shutdown", "error", err)
-	}
-
-	if err := orch.Shutdown(); err != nil {
-		slog.Error("orchestrator shutdown error", "error", err)
-	}
-
-	// Graceful HITL gRPC shutdown
-	if hitlServer != nil {
-		slog.Info("stopping HITL gRPC server")
-		hitlServer.GracefulStop()
-	}
-
 	slog.Info("Kyoci Agent v5 stopped")
 }
 
@@ -489,6 +549,13 @@ func printBanner(addr string, cfg *config.Config) {
 			cfg.HITL.Port, cfg.Agent.Orchestration.MaxRetries)
 	} else {
 		fmt.Println("  HITL:      ❌ Disabled")
+	}
+
+	if cfg.Server.AgentGRPCPort > 0 {
+		fmt.Printf("  Agent gRPC: localhost:%d  (Execute/ExecuteStream/GetStatus)\n",
+			cfg.Server.AgentGRPCPort)
+	} else {
+		fmt.Println("  Agent gRPC: ❌ Disabled")
 	}
 
 	if cfg.Telegram.Enabled {

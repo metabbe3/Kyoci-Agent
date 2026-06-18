@@ -83,3 +83,8 @@ l3_benchmark_pass_scenarios.txt
 
 # L3 bench transient state
 /tmp/kyoci-l3-bench.db
+
+# Build artifacts (do not commit)
+/server
+/web/dist/
+*.tsbuildinfo

@@ -254,6 +254,52 @@ func hashToolCall(toolName, args string) string {
 // Each step method is responsible for: calling the LLM if needed, parsing the
 // response into a Thought, recording it in loopState, and returning the next
 // LoopState. The main loop driver (added in Step 10) dispatches on ls.state.
+//
+// The four LLM-backed steps (Assess, Plan, Execute, Reflect) share an identical
+// front skeleton: append a prompt to the conversation → call think → parse the
+// response into a Thought → record it → hand the Thought to the step's custom
+// transition logic. runThoughtStep captures that skeleton so each step only
+// spells out what is unique to it (which prompt, and what to do with the
+// parsed Thought). verifyStep is deterministic (no LLM call) and does not use
+// the runner.
+
+// runThoughtStep is the shared skeleton for the LLM-backed thinking steps. It
+// appends prompt to the conversation, calls the model, parses the response into
+// a Thought, records it in ls.thoughts, and returns the Thought.
+//
+// stateLabel prefixes the wrapped error so the driver's isParseError check
+// (which greps for "parse failed") and the LLM-failure path stay distinguishable
+// per state, exactly as the inline implementations did ("<state>: parse failed: ...",
+// "<state>: LLM call failed: ...").
+//
+// The message sequence is prompt-sensitive: this helper appends EXACTLY one
+// user message (the prompt) before calling think, matching the previous inline
+// behavior. Steps that need to inject a different/additional message before the
+// LLM call (e.g. executeStep's loop-break / search-budget nudges) build that
+// message themselves and pass the final prompt here.
+func (a *Agent) runThoughtStep(ctx context.Context, convo *Context, ls *loopState, prompt, stateLabel string) (*Thought, error) {
+	convo.AddMessage(kyoci.RoleUser, prompt)
+
+	_, resp, err := a.think(ctx, convo)
+	if err != nil {
+		return nil, fmt.Errorf("%s: LLM call failed: %w", stateLabel, err)
+	}
+
+	th, err := parseThought(resp.Content)
+	if err != nil {
+		// The model emitted something we couldn't parse. Caller (the loop driver)
+		// will inject ForcedJSONReminder and retry, up to the nudge cap.
+		return nil, fmt.Errorf("%s: parse failed: %w", stateLabel, err)
+	}
+
+	ls.thoughts = append(ls.thoughts, *th)
+	a.logger.Debug("thinking step produced thought",
+		"state", stateLabel,
+		"thoughts", len(ls.thoughts),
+		"next_action", th.NextAction.Type,
+		"confidence", th.Confidence)
+	return th, nil
+}
 
 // assessConfidenceThreshold is the minimum confidence for the fast path.
 // Below this, even simple tasks get routed through Plan.
@@ -262,22 +308,10 @@ const assessConfidenceThreshold = 0.7
 // assessStep is the entry state. It analyzes the task and decides between the
 // fast path (simple + confident → Execute) and the full multi-pass loop (→ Plan).
 func (a *Agent) assessStep(ctx context.Context, convo *Context, ls *loopState, task string) (*Thought, LoopState, error) {
-	// Prompt the model for a structured assessment.
-	convo.AddMessage(kyoci.RoleUser, AssessPrompt(task))
-
-	_, resp, err := a.think(ctx, convo)
+	th, err := a.runThoughtStep(ctx, convo, ls, AssessPrompt(task), "assess")
 	if err != nil {
-		return nil, StateAssess, fmt.Errorf("assess: LLM call failed: %w", err)
+		return nil, StateAssess, err
 	}
-
-	th, err := parseThought(resp.Content)
-	if err != nil {
-		// The model emitted something we couldn't parse. Caller (the loop driver)
-		// will inject ForcedJSONReminder and retry, up to the nudge cap.
-		return nil, StateAssess, fmt.Errorf("assess: parse failed: %w", err)
-	}
-
-	ls.thoughts = append(ls.thoughts, *th)
 
 	// Deterministic complexity check — even a confident model can't skip Plan
 	// when the task text itself signals complexity.
@@ -309,19 +343,11 @@ const maxPlanItems = 8
 // planStep is the second state when Assess escalates. It asks the model for a
 // structured decomposition, records it in loopState, and transitions to Execute.
 func (a *Agent) planStep(ctx context.Context, convo *Context, ls *loopState, task string) (*Thought, LoopState, error) {
-	convo.AddMessage(kyoci.RoleUser, PlanPrompt(task))
-
-	_, resp, err := a.think(ctx, convo)
+	th, err := a.runThoughtStep(ctx, convo, ls, PlanPrompt(task), "plan")
 	if err != nil {
-		return nil, StatePlan, fmt.Errorf("plan: LLM call failed: %w", err)
+		return nil, StatePlan, err
 	}
 
-	th, err := parseThought(resp.Content)
-	if err != nil {
-		return nil, StatePlan, fmt.Errorf("plan: parse failed: %w", err)
-	}
-
-	ls.thoughts = append(ls.thoughts, *th)
 	ls.currentPlan = capPlan(th.Plan)
 
 	return th, StateExecute, nil
@@ -363,12 +389,16 @@ func (a *Agent) executeStep(ctx context.Context, convo *Context, ls *loopState) 
 	// Skip the nudge when there's a real tool failure (Reflect has something
 	// concrete to diagnose) or when the budget is near exhausted (the model
 	// is far gone and a nudge would waste a turn it may not have).
+	// prompt is the user turn this Execute iteration appends before calling the
+	// model. The pre-flight branches select it (loop-break nudge / search-budget
+	// nudge / the standard ExecutePrompt); runThoughtStep appends it.
+	var prompt string
 	if looping && ls.loopBreakAttempted == 0 && !ls.hasToolExecutionFailure() && !nearExhausted {
 		ls.loopBreakAttempted++
 		a.logger.Warn("execute pre-flight: injecting loop-break nudge",
 			"tool_calls_used", ls.toolCallsUsed,
 			"unique_calls", len(ls.uniqueCallHashes))
-		convo.AddMessage(kyoci.RoleUser, LoopBreakNudge)
+		prompt = LoopBreakNudge
 	} else if looping || nearExhausted {
 		// Escalate to Reflect. Record a failure so that
 		// reflectExhaustionMessage shows a real cause instead of "none".
@@ -402,21 +432,15 @@ func (a *Agent) executeStep(ctx context.Context, convo *Context, ls *loopState) 
 		a.logger.Warn("execute pre-flight: injecting search-budget nudge",
 			"searches_used", ls.searchesUsed,
 			"tool_calls_used", ls.toolCallsUsed)
-		convo.AddMessage(kyoci.RoleUser, SearchBudgetNudge)
+		prompt = SearchBudgetNudge
 	} else {
-		convo.AddMessage(kyoci.RoleUser, ExecutePrompt)
+		prompt = ExecutePrompt
 	}
 
-	_, resp, err := a.think(ctx, convo)
+	th, err := a.runThoughtStep(ctx, convo, ls, prompt, "execute")
 	if err != nil {
-		return nil, StateExecute, fmt.Errorf("execute: LLM call failed: %w", err)
+		return nil, StateExecute, err
 	}
-
-	th, err := parseThought(resp.Content)
-	if err != nil {
-		return nil, StateExecute, fmt.Errorf("execute: parse failed: %w", err)
-	}
-	ls.thoughts = append(ls.thoughts, *th)
 
 	switch th.NextAction.Type {
 	case "final_answer":
@@ -699,19 +723,10 @@ func (a *Agent) reflectStep(ctx context.Context, convo *Context, ls *loopState) 
 		return nil, StateDone, nil
 	}
 
-	convo.AddMessage(kyoci.RoleUser, ReflectPrompt(ls.failureHistory))
-
-	_, resp, err := a.think(ctx, convo)
+	th, err := a.runThoughtStep(ctx, convo, ls, ReflectPrompt(ls.failureHistory), "reflect")
 	if err != nil {
-		return nil, StateReflect, fmt.Errorf("reflect: LLM call failed: %w", err)
+		return nil, StateReflect, err
 	}
-
-	th, err := parseThought(resp.Content)
-	if err != nil {
-		return nil, StateReflect, fmt.Errorf("reflect: parse failed: %w", err)
-	}
-
-	ls.thoughts = append(ls.thoughts, *th)
 	ls.reflectionsUsed++
 
 	switch th.NextAction.Type {
@@ -967,6 +982,18 @@ transitionLoop:
 
 		// A successful transition resets the consecutive-parse-failure counter.
 		parseNudgesInARow = 0
+
+		// Debug trace of each state-machine transition: which state ran, where it
+		// goes next, and the resource counters. The state machine previously had
+		// zero logging here, making reflection-loop stalls undiagnosable.
+		a.logger.Debug("thinking transition",
+			"iter", iter+1,
+			"from", stateName(currentState),
+			"to", stateName(next),
+			"tool_calls", ls.toolCallsUsed,
+			"thoughts", len(ls.thoughts),
+			"reflections", ls.reflectionsUsed,
+			"replans", ls.replansUsed)
 
 		if next == StateDone {
 			currentState = StateDone

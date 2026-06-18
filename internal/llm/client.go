@@ -9,12 +9,12 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/metabbe3/Kyoci-Agent/internal/apperr"
 	kyoci "github.com/metabbe3/Kyoci-Agent/pkg"
 )
 
@@ -37,8 +37,11 @@ type OpenAIClient struct {
 	isOllama         bool   // Ollama needs tool history flattened to text
 }
 
-// NewOpenAIClient creates a new OpenAI-compatible client.
-func NewOpenAIClient(name string, config kyoci.ProviderConfig) (*OpenAIClient, error) {
+// NewOpenAIClient creates a new OpenAI-compatible client and returns it as the
+// kyoci.Provider interface, so callers depend on the contract rather than the
+// concrete type. Use AsOpenAIClient when the concrete type is genuinely needed
+// (provider-specific fluent builders, or test introspection).
+func NewOpenAIClient(name string, config kyoci.ProviderConfig) (kyoci.Provider, error) {
 	if config.BaseURL == "" {
 		return nil, fmt.Errorf("provider %s: base_url is required", name)
 	}
@@ -88,32 +91,37 @@ func (c *OpenAIClient) WithXAPIKey(version string) *OpenAIClient {
 	return c
 }
 
+// AsOpenAIClient returns the concrete *OpenAIClient behind a kyoci.Provider, or
+// nil if the provider is a different type. Use it for provider-specific
+// configuration (the fluent auth builders above) or test introspection; normal
+// callers should keep working with the kyoci.Provider interface.
+func AsOpenAIClient(p kyoci.Provider) *OpenAIClient {
+	if c, ok := p.(*OpenAIClient); ok {
+		return c
+	}
+	return nil
+}
+
 // Name returns the provider name.
 func (c *OpenAIClient) Name() string {
 	return c.name
 }
 
-// Complete performs a non-streaming completion request.
-func (c *OpenAIClient) Complete(ctx context.Context, req kyoci.CompletionRequest) (*kyoci.CompletionResponse, error) {
-	startTime := time.Now()
-
-	// Check circuit breaker
-	if !c.circuitBreaker.Allow() {
-		return nil, fmt.Errorf("provider %s: circuit breaker is open", c.name)
-	}
-
-	// Prepare request
+// buildPayload constructs the OpenAI-compatible request body shared by Complete
+// and Stream, removing the verbatim payload-builder duplication between them.
+// stream selects the "stream" field. It returns the mutable payload map (the
+// Ollama context-strip retry path mutates payload["messages"]) and the resolved
+// model name (used by the per-method debug log).
+func (c *OpenAIClient) buildPayload(req kyoci.CompletionRequest, stream bool) (map[string]any, string) {
 	model := req.Model
 	if model == "" {
 		model = c.config.DefaultModel
 	}
-
-	payload := map[string]interface{}{
+	payload := map[string]any{
 		"model":    model,
 		"messages": c.convertMessages(req.Messages),
-		"stream":   false,
+		"stream":   stream,
 	}
-
 	if req.Temperature > 0 {
 		payload["temperature"] = req.Temperature
 	}
@@ -143,6 +151,20 @@ func (c *OpenAIClient) Complete(ctx context.Context, req kyoci.CompletionRequest
 		}
 		payload["tool_choice"] = tc
 	}
+	return payload, model
+}
+
+// Complete performs a non-streaming completion request.
+func (c *OpenAIClient) Complete(ctx context.Context, req kyoci.CompletionRequest) (*kyoci.CompletionResponse, error) {
+	startTime := time.Now()
+
+	// Check circuit breaker
+	if !c.circuitBreaker.Allow() {
+		return nil, fmt.Errorf("provider %s: %w", c.name, apperr.ErrCircuitOpen)
+	}
+
+	// Prepare request
+	payload, model := c.buildPayload(req, false)
 
 	c.logger.Debug("sending completion request",
 		"provider", c.name,
@@ -329,50 +351,11 @@ func (c *OpenAIClient) Complete(ctx context.Context, req kyoci.CompletionRequest
 func (c *OpenAIClient) Stream(ctx context.Context, req kyoci.CompletionRequest) (<-chan kyoci.StreamChunk, error) {
 	// Check circuit breaker
 	if !c.circuitBreaker.Allow() {
-		return nil, fmt.Errorf("provider %s: circuit breaker is open", c.name)
+		return nil, fmt.Errorf("provider %s: %w", c.name, apperr.ErrCircuitOpen)
 	}
 
 	// Prepare request
-	model := req.Model
-	if model == "" {
-		model = c.config.DefaultModel
-	}
-
-	payload := map[string]interface{}{
-		"model":    model,
-		"messages": c.convertMessages(req.Messages),
-		"stream":   true,
-	}
-
-	if req.Temperature > 0 {
-		payload["temperature"] = req.Temperature
-	}
-	if req.MaxTokens > 0 {
-		payload["max_tokens"] = req.MaxTokens
-	}
-	if req.TopP > 0 {
-		payload["top_p"] = req.TopP
-	}
-	if req.FrequencyPenalty > 0 {
-		payload["frequency_penalty"] = req.FrequencyPenalty
-	}
-	if req.PresencePenalty > 0 {
-		payload["presence_penalty"] = req.PresencePenalty
-	}
-	if len(req.StopSequences) > 0 {
-		payload["stop"] = req.StopSequences
-	}
-	if len(req.Tools) > 0 {
-		payload["tools"] = c.convertTools(req.Tools)
-		// tool_choice: prefer the caller's explicit choice (e.g. "required" to
-		// force at least one tool call, "none" to forbid). Default to "auto" —
-		// many models won't use tools without this explicit signal.
-		tc := req.ToolChoice
-		if tc == "" {
-			tc = "auto"
-		}
-		payload["tool_choice"] = tc
-	}
+	payload, model := c.buildPayload(req, true)
 
 	jsonPayload, err := json.Marshal(payload)
 	if err != nil {
@@ -429,6 +412,20 @@ func (c *OpenAIClient) Stream(ctx context.Context, req kyoci.CompletionRequest) 
 		defer close(ch)
 		defer resp.Body.Close()
 
+		// Cancel reader: closing the body on ctx cancellation unblocks
+		// scanner.Scan (which otherwise blocks on the network read until EOF).
+		// streamDone lets the watcher exit cleanly when the reader finishes
+		// normally, so it never leaks.
+		streamDone := make(chan struct{})
+		go func() {
+			select {
+			case <-ctx.Done():
+				resp.Body.Close()
+			case <-streamDone:
+			}
+		}()
+		defer close(streamDone)
+
 		scanner := bufio.NewScanner(resp.Body)
 		var fullContent strings.Builder
 		var totalPromptTokens, totalCompletionTokens int
@@ -480,6 +477,12 @@ func (c *OpenAIClient) Stream(ctx context.Context, req kyoci.CompletionRequest) 
 			}
 		}
 
+		if ctx.Err() != nil {
+			// Stream was canceled (caller deadline/cancel) — surface it rather
+			// than the secondary "read on closed body" error from scanner.Err.
+			ch <- kyoci.StreamError(fmt.Errorf("provider %s: stream canceled: %w", c.name, ctx.Err()))
+			return
+		}
 		if err := scanner.Err(); err != nil {
 			c.logger.Error("streaming error", "provider", c.name, "error", err)
 			ch <- kyoci.StreamError(fmt.Errorf("provider %s: streaming error: %w", c.name, err))
@@ -761,106 +764,6 @@ func (c *OpenAIClient) convertResponse(apiResp *ChatCompletionResponse) *kyoci.C
 	}
 }
 
-// textToolCallPattern matches [Tool Call: name({...json...})] blocks that the model
-// echoes from the flattened Ollama conversation history.
-var textToolCallPattern = regexp.MustCompile(`(?s)\[Tool Call:\s*(\w+)\((\{.*?\})\)\]`)
-
-// extractTextToolCalls strips [Tool Call: ...] text artifacts from content and
-// optionally parses them into structured ToolCall objects.
-func extractTextToolCalls(content string) (string, []kyoci.ToolCall) {
-	matches := textToolCallPattern.FindAllStringSubmatch(content, -1)
-	if len(matches) == 0 {
-		return content, nil
-	}
-
-	var calls []kyoci.ToolCall
-	for i, m := range matches {
-		calls = append(calls, kyoci.ToolCall{
-			ID:        fmt.Sprintf("textcall_%d_%d", i, time.Now().UnixNano()),
-			Name:      m[1],
-			Arguments: m[2],
-		})
-	}
-
-	// Remove all matched text from content
-	cleaned := textToolCallPattern.ReplaceAllString(content, "")
-	// Clean up extra whitespace/newlines left behind
-	cleaned = regexp.MustCompile(`\n{3,}`).ReplaceAllString(cleaned, "\n\n")
-	cleaned = strings.TrimSpace(cleaned)
-
-	return cleaned, calls
-}
-
-// normalizeContent returns the model's textual answer, falling back to the
-// `reasoning` field when `content` is empty or whitespace-only.
-//
-// Some models (Gemma, o1-style, DeepSeek-R1) emit their final answer inside a
-// `reasoning` chain-of-thought field while leaving `content` empty. Without
-// this fallback the caller would see an empty string and treat the call as a
-// failure. The fallback keeps the pipeline model-agnostic.
-func normalizeContent(content, reasoning string) string {
-	if strings.TrimSpace(content) != "" {
-		return content
-	}
-	if strings.TrimSpace(reasoning) != "" {
-		return strings.TrimSpace(reasoning)
-	}
-	return ""
-}
-
-// bareJSONToolCallPattern matches a JSON object containing a "name" and
-// "arguments" pair, as emitted by qwen2.5-coder and a few other Ollama models
-// when they ignore OpenAI-style tool_calls and instead emit tool intent
-// directly in `content`. Optional surrounding <tool_call>...</tool_call> tags
-// or ```json fences are tolerated.
-var bareJSONToolCallPattern = regexp.MustCompile(
-	"(?s)(?:<tool_call>\\s*)?(?:(?:```)(?:json)?\\s*)?\\{\\s*\"name\"\\s*:\\s*\"([^\"]+)\"\\s*,\\s*\"arguments\"\\s*:\\s*(\\{.*?\\})\\s*\\}(?:\\s*</tool_call>)?(?:\\s*```)?",
-)
-
-// extractBareJSONToolCalls scans content for bare-JSON tool call objects and
-// returns (cleaned content, parsed tool calls). When no calls are found, the
-// content is returned unchanged. Malformed JSON is ignored silently — the
-// function is best-effort and never panics.
-func extractBareJSONToolCalls(content string) (string, []kyoci.ToolCall) {
-	if strings.TrimSpace(content) == "" {
-		return content, nil
-	}
-	matches := bareJSONToolCallPattern.FindAllStringSubmatch(content, -1)
-	if len(matches) == 0 {
-		return content, nil
-	}
-
-	var calls []kyoci.ToolCall
-	for i, m := range matches {
-		name := strings.TrimSpace(m[1])
-		args := strings.TrimSpace(m[2])
-		if name == "" {
-			continue
-		}
-		// Validate args is parseable JSON; skip if not.
-		var js interface{}
-		if err := json.Unmarshal([]byte(args), &js); err != nil {
-			continue
-		}
-		raw, _ := json.Marshal(js) // re-marshal to canonical form
-		calls = append(calls, kyoci.ToolCall{
-			ID:        fmt.Sprintf("barecall_%d_%d", i, time.Now().UnixNano()),
-			Name:      name,
-			Arguments: string(raw),
-		})
-	}
-
-	if len(calls) == 0 {
-		return content, nil
-	}
-
-	// Remove the matched tool-call objects from content so the synthesizer /
-	// user doesn't see raw JSON. Preserve any surrounding prose.
-	cleaned := bareJSONToolCallPattern.ReplaceAllString(content, "")
-	cleaned = regexp.MustCompile(`\n{3,}`).ReplaceAllString(cleaned, "\n\n")
-	cleaned = strings.TrimSpace(cleaned)
-	return cleaned, calls
-}
 
 // ==============================================================================
 // API Types (OpenAI-compatible format)

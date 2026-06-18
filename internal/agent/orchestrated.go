@@ -4,12 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"regexp"
 	"strings"
 	"sync"
 
 	"github.com/metabbe3/Kyoci-Agent/internal/tool"
+	"golang.org/x/sync/errgroup"
 	kyoci "github.com/metabbe3/Kyoci-Agent/pkg"
 )
 
@@ -260,11 +260,16 @@ func mcpToolsReferencedBy(desc string, all []kyoci.ToolDefinition) []string {
 	return hit
 }
 
-// filterTools returns the subset of `all` whose Name appears in `keep`. Order
-// follows `all`. Used to physically strip competing tools from a worker's
-// payload so the model cannot substitute away from the assigned tool family
-// — the single highest-leverage enforcement against small-model tool-substitution
-// defects (gemma-4 reaching for web_search/memory_recall instead of file write).
+// filterTools is the single parameterized tool-filter core: it returns the
+// subset of `all` whose Name appears in `keep`, preserving `all`'s order. The
+// per-step decision (which names to keep) lives in
+// (*orchestratedWorker).filterToolsForStep; the two named specializations
+// below are the keep-sets for the MCP and file-creation cases.
+//
+// Physically stripping competing tools from a worker's payload is the single
+// highest-leverage enforcement against small-model tool-substitution defects
+// (gemma-4 reaching for web_search/memory_recall instead of the assigned tool
+// family, or list/search/recall instead of file write).
 func filterTools(all []kyoci.ToolDefinition, keep []string) []kyoci.ToolDefinition {
 	want := make(map[string]bool, len(keep))
 	for _, n := range keep {
@@ -279,22 +284,19 @@ func filterTools(all []kyoci.ToolDefinition, keep []string) []kyoci.ToolDefiniti
 	return out
 }
 
-// filterToolsForMCP returns a tool list containing only the referenced MCP
-// tool(s) plus the minimal set the worker needs to act on their output
-// (`file` to write results, `terminal` for parity). All other tools —
-// especially web_search and memory_recall, the substitutes the model reaches
-// for — are stripped.
+// filterToolsForMCP keeps only the referenced MCP tool(s) plus the minimal set
+// the worker needs to act on their output (`file` to write results, `terminal`
+// for parity). All other tools — especially web_search and memory_recall, the
+// substitutes the model reaches for — are stripped.
 func filterToolsForMCP(all []kyoci.ToolDefinition, referenced []string) []kyoci.ToolDefinition {
-	keep := append([]string{}, referenced...)
-	keep = append(keep, "file", "terminal")
-	return filterTools(all, keep)
+	return filterTools(all, append(append([]string{}, referenced...), "file", "terminal"))
 }
 
-// filterToolsForFileCreation restricts the worker payload to the tools that
-// can actually produce an artifact on disk. Without this, the model reaches
-// for web_search, memory_recall, browser, docs, etc. and reports success from
-// parametric memory — the same substitution defect filterToolsForMCP solves
-// for MCP-referenced steps.
+// filterToolsForFileCreation keeps only the tools that can actually produce an
+// artifact on disk. Without this, the model reaches for web_search,
+// memory_recall, browser, docs, etc. and reports success from parametric
+// memory — the same substitution defect filterToolsForMCP solves for
+// MCP-referenced steps.
 func filterToolsForFileCreation(all []kyoci.ToolDefinition) []kyoci.ToolDefinition {
 	return filterTools(all, []string{"file", "terminal"})
 }
@@ -413,8 +415,8 @@ func (a *Agent) planTask(ctx context.Context, task string) ([]OrchStep, error) {
 		// Log full raw output (truncated to 1KB) so future parser failures are
 		// diagnosable. The error message itself only carries 200 chars.
 		a.logger.Warn("orchestrator: planner parse failed across all tiers",
-			"len", len(resp.Content), "raw_head", truncate(resp.Content, 1000))
-		return nil, fmt.Errorf("planner output parse failed: %w (raw: %q)", err, truncate(resp.Content, 200))
+			"len", len(resp.Content), "raw_head", truncateStr(resp.Content, 1000))
+		return nil, fmt.Errorf("planner output parse failed: %w (raw: %q)", err, truncateStr(resp.Content, 200))
 	}
 
 	// Enforce MaxSteps cap. Over-long plans confuse the synthesizer.
@@ -519,14 +521,7 @@ func extractOutermostArray(input string) string {
 	return ""
 }
 
-// truncate is a small helper for error messages so we don't dump huge model
-// outputs into logs.
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "..."
-}
+// (truncate removed — use the package-canonical truncateStr in format/loop.go)
 
 // trailingCommaRe matches a comma (optionally followed by whitespace)
 // immediately before a closing `}` or `]`. Used by parseOrchSteps tier 2.5 to
@@ -579,12 +574,11 @@ func (a *Agent) executeWorkers(ctx context.Context, task string, steps []OrchSte
 			return results, fmt.Errorf("orchestrator: stuck — no eligible steps (possible cycle)")
 		}
 
-		var wg sync.WaitGroup
+		g, gctx := errgroup.WithContext(ctx)
 		for _, step := range batch {
-			wg.Add(1)
-			sem <- struct{}{}
-			go func(s OrchStep) {
-				defer wg.Done()
+			step := step
+			sem <- struct{}{} // concurrency limit (worker fan-out)
+			g.Go(func() error {
 				defer func() { <-sem }()
 
 				// Skill fast-path: when the planner explicitly assigned
@@ -594,40 +588,41 @@ func (a *Agent) executeWorkers(ctx context.Context, task string, steps []OrchSte
 				// full worker turn (system+user messages + tool round-trip)
 				// on every trivial computation (json format, color convert,
 				// hash, uuid, subnet calc, cron parse, etc.).
-				if strings.TrimSpace(s.ToolHint) == "skill" && a.skills != nil {
+				if strings.TrimSpace(step.ToolHint) == "skill" && a.skills != nil {
 					if sk, ok := a.skills.Match(task); ok {
 						a.logger.Info("orchestrator: skill fast-path",
-							"step", s.ID, "skill", sk.Name())
-						if out, err := a.skills.Execute(ctx, sk.Name(), task); err == nil {
+							"step", step.ID, "skill", sk.Name())
+						if out, err := a.skills.Execute(gctx, sk.Name(), task); err == nil {
 							mu.Lock()
-							results[s.ID] = out
-							done[s.ID] = true
+							results[step.ID] = out
+							done[step.ID] = true
 							mu.Unlock()
-							return
+							return nil
 						} else {
 							a.logger.Warn("orchestrator: skill fast-path failed, falling back to worker",
-								"step", s.ID, "skill", sk.Name(), "error", err)
+								"step", step.ID, "skill", sk.Name(), "error", err)
 						}
 					}
 				}
 
 				// Snapshot the prior results this worker is allowed to see.
 				mu.Lock()
-				prior := snapshotPrior(s, results)
+				prior := snapshotPrior(step, results)
 				mu.Unlock()
 
-				out, werr := worker(ctx, task, s, prior)
+				out, werr := worker(gctx, task, step, prior)
 				if werr != nil {
 					out = fmt.Sprintf("[worker error: %v]", werr)
 				}
 
 				mu.Lock()
-				results[s.ID] = out
-				done[s.ID] = true
+				results[step.ID] = out
+				done[step.ID] = true
 				mu.Unlock()
-			}(step)
+				return nil // never short-circuit: results processed in order after the fan-out
+			})
 		}
-		wg.Wait()
+		_ = g.Wait()
 	}
 	return results, nil
 }
@@ -655,219 +650,18 @@ func snapshotPrior(step OrchStep, results map[int]string) map[int]string {
 }
 
 // -----------------------------------------------------------------------------
-// Phase 3: Worker (one focused LLM call per step)
+// Phase 3: Worker — file-creation verification gate
+//
+// The worker sub-loop itself (runWorker + buildMessages + filterToolsForStep +
+// reactLoop) lives in worker.go. This file holds only the verification gate the
+// worker calls for file-producing steps: verifyFileCreation + its path-extraction
+// helpers. Kept here because it reads the worker's conversation history, which
+// is a concern of the orchestrator's honesty contract rather than the loop's
+// control flow.
 // -----------------------------------------------------------------------------
 
-// runWorker executes ONE step as a focused LLM call with native function-calling.
-// No JSON scratchpad, no thinking state machine — the model emits tool_calls
-// directly (or a plain-text finding). A tight ReAct-style loop handles any
-// tool calls and re-prompts until the model produces a final answer or the
-// iteration cap is hit.
-//
-// runWorker is the production worker. Tests may inject a.orchWorkerFn to
-// bypass it for dispatcher-focused tests.
-func (a *Agent) runWorker(ctx context.Context, task string, step OrchStep, prior map[int]string) (string, error) {
-	cfg := a.effectiveOrchConfig()
-
-	// Build the initial conversation: system + user with step + prior context.
-	userContent := fmt.Sprintf("Step %d: %s\n\nOriginal task: %s", step.ID, step.Description, task)
-	// Layer 1b: surface the planner's tool_hint so the model has a concrete
-	// default rather than having to choose a tool family from the registry.
-	// Empty hint → "any" signals a pure-reasoning step (see WorkerSystemPrompt EXCEPTION).
-	hintLabel := strings.TrimSpace(step.ToolHint)
-	if hintLabel == "" {
-		hintLabel = "any (pure-reasoning step — you may answer without tools)"
-	}
-	userContent += "\n\nExpected tool family for this step: " + hintLabel
-	if len(prior) > 0 {
-		userContent += "\n\nPrior context from earlier steps:\n"
-		for id, r := range prior {
-			userContent += fmt.Sprintf("- step %d result: %s\n", id, truncate(r, 400))
-		}
-	}
-	userContent += "\n\nComplete this step now using the available tools. When done, report your findings in one or two sentences."
-
-	// File-creation directive: when the step expresses creation intent,
-	// proactively steer the model toward the `file` tool's write operation.
-	// Without this, gemma4:12b substitutes list/search/recall and never
-	// produces the artifact — the same substitution defect observed for MCP
-	// tools before Go-side enforcement was added.
-	if isFileCreationStep(step.Description) {
-		userContent += "\n\n" + fileCreationDirective
-		a.logger.Info("orchestrator: file-creation directive injected", "step", step.ID)
-	}
-
-	// Inject L3 memory context (user profile, past experiences, lessons) into
-	// the worker system prompt — appended AFTER WorkerSystemPrompt so the
-	// strict output contract stays the leading signal. Mirrors loop.go:210-214.
-	systemPrompt := WorkerSystemPrompt
-	if a.injector != nil {
-		if injected := a.injector.Inject(task); injected != "" {
-			systemPrompt = systemPrompt + "\n\n" + injected
-		}
-	}
-
-	messages := []kyoci.Message{
-		{Role: kyoci.RoleSystem, Content: systemPrompt},
-		{Role: kyoci.RoleUser, Content: userContent},
-	}
-
-	// Build tool definitions (native function-calling). When the step
-	// description references an MCP tool by name, enforce Go-side tool
-	// filtering: with competing tools (web_search, memory_recall, etc.)
-	// physically removed from the payload, the model cannot substitute them
-	// for the named MCP tool — the #1 failure mode that prompt constraints
-	// alone could not fix in gemma4:12b. File-creation steps get the same
-	// treatment for the same reason — without enforcement the model substitutes
-	// list/search/recall for write and then hallucinates success. When neither
-	// condition applies, the full tool list is used so L1/L2 paths are unaffected.
-	var toolDefs []kyoci.ToolDefinition
-	if a.tools != nil {
-		all := a.tools.List()
-		referenced := mcpToolsReferencedBy(step.Description, all)
-		switch {
-		case len(referenced) > 0:
-			toolDefs = filterToolsForMCP(all, referenced)
-			a.logger.Info("orchestrator: worker tool list filtered for MCP step",
-				"step", step.ID, "mcp_tools", referenced, "kept", toolNames(toolDefs))
-		case isFileCreationStep(step.Description):
-			toolDefs = filterToolsForFileCreation(all)
-			a.logger.Info("orchestrator: worker tool list filtered for file-creation step",
-				"step", step.ID, "kept", toolNames(toolDefs))
-		default:
-			toolDefs = all
-		}
-	}
-
-	maxIter := cfg.WorkerMaxIterations
-	toolCallsMade := 0
-	nudged := false // Layer 2: evidence guard fires at most once per worker
-
-	for iter := 0; iter < maxIter; iter++ {
-		req := kyoci.CompletionRequest{
-			Messages:    messages,
-			Temperature: a.config.Temperature,
-			MaxTokens:   cfg.WorkerMaxTokens,
-			Model:       a.config.Model,
-			Tools:       toolDefs,
-		}
-		// Layer 3c: on the FIRST turn of an evidence step, ask the provider to
-		// force a tool call. qwen2.5-coder:14b ignores this (it emits text-JSON),
-		// but Layer 2 catches that case — this is the belt-and-suspenders layer
-		// for providers that DO honor tool_choice. On later turns, leave it
-		// "" (auto) so the model can decide when it has enough evidence.
-		// Fires when either the planner assigned a tool_hint OR the step was
-		// detected as file-creation (which needs the `file` write op specifically).
-		if iter == 0 && (strings.TrimSpace(step.ToolHint) != "" || isFileCreationStep(step.Description)) {
-			req.ToolChoice = "required"
-		}
-
-		resp, err := a.router.Route(ctx, req, a.config.PreferredProvider)
-		if err != nil {
-			return "", fmt.Errorf("worker LLM call failed (iter %d): %w", iter, err)
-		}
-		if resp == nil {
-			return "", fmt.Errorf("worker LLM returned nil response (iter %d)", iter)
-		}
-
-		// No tool calls → the model wants to terminate. Decide whether to accept.
-		if len(resp.ToolCalls) == 0 {
-			out := strings.TrimSpace(resp.Content)
-			if out == "" {
-				out = fmt.Sprintf("[step %d produced no output]", step.ID)
-			}
-
-			// Layer 2: evidence guard. A worker whose step carries a non-empty
-			// tool_hint OR expresses file-creation intent must gather real
-			// evidence (a tool call) before answering. On the FIRST turn, if
-			// the model answered from memory, inject the WorkerEvidenceNudge
-			// once and re-run instead of accepting. This is the load-bearing
-			// fix: qwen2.5-coder:14b otherwise answers every step from
-			// parametric memory and the synthesizer honestly reports
-			// "did not find" because no file was ever read. The file-creation
-			// case extends the same defense to steps the planner didn't assign
-			// a tool_hint for but which clearly need a file write.
-			hint := strings.TrimSpace(step.ToolHint)
-			needsEvidence := hint != "" || isFileCreationStep(step.Description)
-			if iter == 0 && needsEvidence && !nudged {
-				nudgeHint := hint
-				if nudgeHint == "" {
-					nudgeHint = "file"
-				}
-				messages = append(messages, kyoci.Message{
-					Role:    kyoci.RoleAssistant,
-					Content: out,
-				})
-				messages = append(messages, kyoci.Message{
-					Role:    kyoci.RoleUser,
-					Content: WorkerEvidenceNudge(nudgeHint),
-				})
-				nudged = true
-				a.logger.Info("orchestrator: worker evidence nudge injected",
-					"step", step.ID, "tool_hint", nudgeHint)
-				continue
-			}
-
-			// Already nudged (or past turn 0) and the model STILL refuses tools.
-			// Accept the answer so the pipeline makes progress, but tag it so the
-			// synthesizer can honestly report that this step produced no observed
-			// evidence — the user sees the gap instead of mistaking memory for fact.
-			// The file-creation case is also caught here; the verification gate
-			// below will additionally rewrite the output with [VERIFICATION FAILED].
-			if nudged && needsEvidence && toolCallsMade == 0 {
-				out = "[no tool evidence — answer is from model memory] " + out
-			}
-
-			a.logger.Info("orchestrator: worker done",
-				"step", step.ID, "iters", iter+1, "tool_calls", toolCallsMade, "nudged", nudged)
-			if isFileCreationStep(step.Description) {
-				out = a.verifyFileCreation(ctx, step, messages, out)
-			}
-			return out, nil
-		}
-
-		// Append the assistant message (with tool_calls) to the conversation.
-		messages = append(messages, kyoci.Message{
-			Role:      kyoci.RoleAssistant,
-			Content:   resp.Content,
-			ToolCalls: resp.ToolCalls,
-		})
-
-		// Execute each tool call and append the results as tool messages.
-		for _, tc := range resp.ToolCalls {
-			toolCallsMade++
-			if toolCallsMade > cfg.WorkerMaxToolCalls {
-				// Budget hit — return what we have so far.
-				a.logger.Warn("orchestrator: worker hit tool budget",
-					"step", step.ID, "budget", cfg.WorkerMaxToolCalls)
-				return fmt.Sprintf("[step %d hit tool budget; partial findings in conversation]", step.ID), nil
-			}
-			result, terr := a.act(ctx, tc)
-			if terr != nil {
-				result = fmt.Sprintf("[tool %s error: %v]", tc.Name, terr)
-			}
-			messages = append(messages, kyoci.Message{
-				Role:       kyoci.RoleTool,
-				Content:    result,
-				ToolCallID: tc.ID,
-				Name:       tc.Name,
-			})
-		}
-	}
-
-	// Iteration cap hit without a final answer. Return the last content as the
-	// finding — better than failing outright.
-	a.logger.Warn("orchestrator: worker hit iteration cap",
-		"step", step.ID, "cap", maxIter)
-	lastContent := ""
-	if len(messages) > 0 {
-		lastContent = messages[len(messages)-1].Content
-	}
-	if strings.TrimSpace(lastContent) == "" {
-		lastContent = fmt.Sprintf("[step %d did not produce a final finding within %d iterations]", step.ID, maxIter)
-	}
-	return lastContent, nil
-}
+// runWorker (the worker entry point) now lives in worker.go alongside its
+// buildMessages / filterToolsForStep / reactLoop helpers.
 
 // verifyFileCreation is the load-bearing defense against hallucinated file
 // creation. When a worker step expresses creation intent (isFileCreationStep),
@@ -1065,6 +859,3 @@ func fallbackConcatenate(task string, steps []OrchStep, results map[int]string) 
 func (a *Agent) setOrchWorkerForTest(w workerFunc) {
 	a.orchWorkerFn = w
 }
-
-// keepLogger warms the unused-import guard for slog if future helpers need it.
-var _ = slog.Default()

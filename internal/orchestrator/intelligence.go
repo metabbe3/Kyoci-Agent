@@ -44,8 +44,14 @@ type taskRecorderAdapter struct {
 }
 
 func (a *taskRecorderAdapter) Record(ctx context.Context, rec agent.TaskRecord) {
-	// Run async — never block the response
+	// Run async — never block the response. The request ctx may already be
+	// canceled (this runs after the response is sent), so derive a bounded
+	// context for the background learning work.
 	go func() {
+		recCtx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+		defer cancel()
+		_ = ctx // request context intentionally not used for fire-and-forget work
+
 		// Convert agent.TaskRecord → memory.ExperienceRecord
 		expRec := memory.ExperienceRecord{
 			Task:       rec.Task,
@@ -60,21 +66,21 @@ func (a *taskRecorderAdapter) Record(ctx context.Context, rec agent.TaskRecord) 
 
 		// 1. Record the experience
 		if a.experience != nil {
-			if err := a.experience.Record(expRec); err != nil {
+			if err := a.experience.Record(recCtx, expRec); err != nil {
 				a.logger.Warn("failed to record experience", "error", err)
 			}
 		}
 
 		// 2. Check for patterns and auto-generate skills
 		if a.patterns != nil && expRec.Success {
-			if skillName := a.patterns.CheckAndGenerate(expRec); skillName != "" {
+			if skillName := a.patterns.CheckAndGenerate(recCtx, expRec); skillName != "" {
 				a.logger.Info("auto-skill generated after task", "skill", skillName)
 			}
 		}
 
 		// 3. Trigger reflection for complex tasks
 		if a.reflection != nil {
-			insights, err := a.reflection.Reflect(ctx, expRec)
+			insights, err := a.reflection.Reflect(recCtx, expRec)
 			if err != nil {
 				a.logger.Warn("reflection failed", "error", err)
 			} else if len(insights) > 0 {

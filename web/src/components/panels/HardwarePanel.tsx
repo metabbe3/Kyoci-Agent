@@ -5,6 +5,7 @@ import { TopBar } from "@/components/layout/TopBar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { api, BackendUnreachable } from "@/lib/api";
+import { toastApiError } from "@/lib/api/toast";
 import type { HardwareSpecs, RecommendResult, RecommendPick } from "@/lib/types";
 import { springs, staggerContainer, staggerItem } from "@/lib/motion";
 import { toast } from "sonner";
@@ -32,14 +33,12 @@ export function HardwarePanel() {
         description: "Restart the server to apply.",
       });
       refresh();
-    } catch (e: any) {
-      if (e instanceof BackendUnreachable) {
-        toast.error("Backend unreachable", {
-          description: "Start the Go server: `go run ./cmd/server`.",
-        });
-      } else {
-        toast.error("Failed: " + e.message);
-      }
+    } catch (e) {
+      // toastApiError already maps BackendUnreachable → the actionable hint,
+      // so the instanceof branch is no longer needed. Keep the import for any
+      // future callers that still branch on it.
+      void BackendUnreachable;
+      toastApiError(e, { action: `Set Ollama default → ${model}` });
     }
   };
 

@@ -84,7 +84,7 @@ func TestCompact_WithLLMSummarizer_Success(t *testing.T) {
 	}
 
 	// Verify the summary was stored verbatim in long-term memory.
-	results, err := c.longTerm.Recall("prefers", 10, kyoci.MemoryLongTerm)
+	results, err := c.longTerm.Recall(context.Background(),"prefers", 10, kyoci.MemoryLongTerm)
 	if err != nil {
 		t.Fatalf("Recall: %v", err)
 	}
@@ -120,7 +120,7 @@ func TestCompact_WithLLMSummarizer_Error_Fallback(t *testing.T) {
 	}
 
 	// Entries should be present individually in long-term memory.
-	results, err := c.longTerm.Recall("prefers", 20, kyoci.MemoryLongTerm)
+	results, err := c.longTerm.Recall(context.Background(),"prefers", 20, kyoci.MemoryLongTerm)
 	if err != nil {
 		t.Fatalf("Recall: %v", err)
 	}
@@ -171,7 +171,7 @@ func TestCompact_NoSummarizer_LegacyConcatenation(t *testing.T) {
 	}
 
 	// Legacy summary begins with "Summary of N compacted messages:".
-	results, err := c.longTerm.Recall("summary", 10, kyoci.MemoryLongTerm)
+	results, err := c.longTerm.Recall(context.Background(),"summary", 10, kyoci.MemoryLongTerm)
 	if err != nil {
 		t.Fatalf("Recall: %v", err)
 	}

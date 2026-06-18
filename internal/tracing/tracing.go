@@ -1,143 +1,71 @@
+// Package tracing is a thin backward-compatibility shim that routes the
+// orchestrator's legacy StartSpan / SetAttribute / End API onto OpenTelemetry.
+// New code should use internal/observability directly.
+//
+// The previous in-process span store (sync.Map keyed by trace ID, with
+// GetSpans/GetAllTraces/FromContext) is removed: it had no external consumers
+// and produced no observable signal. Spans now flow to the configured OTel
+// exporter (no-op until observability.Setup runs), preserving the orchestrator's
+// behavior of creating a span per Execute / ExecuteStream / ExecuteDirect.
 package tracing
 
 import (
 	"context"
-	"fmt"
-	"sync"
-	"time"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
-// Tracer manages distributed tracing spans.
+// Tracer wraps an OpenTelemetry tracer under the legacy API.
 type Tracer struct {
-	serviceName string
-	spans       sync.Map // traceID -> []*Span
+	tracer oteltrace.Tracer
 }
 
-// Span represents a single trace span.
+// Span wraps an OpenTelemetry span under the legacy API.
 type Span struct {
-	TraceID    string
-	SpanID     string
-	ParentID   string
-	Name       string
-	StartTime  time.Time
-	EndTime    time.Time
-	Attributes map[string]string
-	mu         sync.Mutex
+	otel oteltrace.Span
 }
 
-// contextKey is the type for span context keys.
-type contextKey struct{}
-
-// spanContextKey is the context key for storing spans.
-var spanContextKey = contextKey{}
-
-// New creates a new Tracer for the given service name.
+// New returns a Tracer backed by the named OpenTelemetry tracer.
 func New(serviceName string) *Tracer {
-	return &Tracer{
-		serviceName: serviceName,
-	}
+	return &Tracer{tracer: otel.Tracer(serviceName)}
 }
 
-// StartSpan creates and starts a new span.
-// If a parent span exists in the context, it becomes the parent of this span.
-// Returns a new context with the span and the span itself.
+// StartSpan starts a span and returns a context carrying it plus the span.
 func (t *Tracer) StartSpan(ctx context.Context, name string) (context.Context, *Span) {
-	span := &Span{
-		TraceID:    generateTraceID(),
-		SpanID:     generateSpanID(),
-		Name:       name,
-		StartTime:  time.Now(),
-		Attributes: make(map[string]string),
-	}
-
-	// Check for parent span
-	if parentSpan := FromContext(ctx); parentSpan != nil {
-		span.ParentID = parentSpan.SpanID
-		span.TraceID = parentSpan.TraceID // Child spans share trace ID
-	}
-
-	// Store span in trace storage
-	value, _ := t.spans.LoadOrStore(span.TraceID, []*Span{})
-	spans := value.([]*Span)
-	t.spans.Store(span.TraceID, append(spans, span))
-
-	// Add span to context
-	newCtx := context.WithValue(ctx, spanContextKey, span)
-
-	return newCtx, span
+	ctx, span := t.tracer.Start(ctx, name)
+	return ctx, &Span{otel: span}
 }
 
-// End marks the span as complete, recording its duration.
-func (s *Span) End() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.EndTime = time.Now()
-}
-
-// SetAttribute adds or updates an attribute on the span.
+// SetAttribute adds a string attribute to the span (the legacy API is
+// string-only, matching the orchestrator's existing call sites).
 func (s *Span) SetAttribute(key, value string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.Attributes == nil {
-		s.Attributes = make(map[string]string)
+	if s == nil || s.otel == nil {
+		return
 	}
-	s.Attributes[key] = value
+	s.otel.SetAttributes(attribute.String(key, value))
 }
 
-// Duration returns the span's duration. Returns 0 if span hasn't ended.
-func (s *Span) Duration() time.Duration {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.EndTime.IsZero() {
-		return 0
+// SetError marks the span as failed and records err.
+func (s *Span) SetError(err error) {
+	if s == nil || s.otel == nil || err == nil {
+		return
 	}
-	return s.EndTime.Sub(s.StartTime)
+	s.otel.SetStatus(codes.Error, err.Error())
+	s.otel.RecordError(err)
 }
 
-// FromContext extracts the span from a context.
-// Returns nil if no span exists in the context.
-func FromContext(ctx context.Context) *Span {
-	if ctx == nil {
-		return nil
+// End completes the span.
+func (s *Span) End() {
+	if s == nil || s.otel == nil {
+		return
 	}
-	span, ok := ctx.Value(spanContextKey).(*Span)
-	if !ok {
-		return nil
-	}
-	return span
+	s.otel.End()
 }
 
-// GetSpans returns all spans for a given trace ID.
-func (t *Tracer) GetSpans(traceID string) []*Span {
-	value, ok := t.spans.Load(traceID)
-	if !ok {
-		return nil
-	}
-	return value.([]*Span)
-}
-
-// GetAllTraces returns all trace IDs.
-func (t *Tracer) GetAllTraces() []string {
-	var traces []string
-	t.spans.Range(func(key, value interface{}) bool {
-		traces = append(traces, key.(string))
-		return true
-	})
-	return traces
-}
-
-// Clear removes all stored spans. Useful for testing or memory management.
-func (t *Tracer) Clear() {
-	t.spans = sync.Map{}
-}
-
-// generateTraceID generates a unique trace ID.
-func generateTraceID() string {
-	return fmt.Sprintf("trace-%d", time.Now().UnixNano())
-}
-
-// generateSpanID generates a unique span ID.
-func generateSpanID() string {
-	return fmt.Sprintf("span-%d", time.Now().UnixNano())
-}
+// Clear is a no-op: OpenTelemetry exports spans via the configured exporter and
+// does not retain them in-process. Kept for API compatibility with callers that
+// flush at shutdown.
+func (t *Tracer) Clear() {}

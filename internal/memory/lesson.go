@@ -57,7 +57,7 @@ func (re *ReflectionEngine) RecordLesson(ctx context.Context, input LessonInput)
 		"task":     truncateForLog(input.Task, 200),
 	}
 
-	id, err := re.storage.Store(content, kyoci.MemoryLongTerm, metadata)
+	id, err := re.storage.Store(ctx, content, kyoci.MemoryLongTerm, metadata)
 	if err != nil {
 		return fmt.Errorf("failed to store lesson: %w", err)
 	}

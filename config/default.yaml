@@ -74,11 +74,12 @@ providers:
         timeout: 120
         max_retries: 3
     anthropic:
-        enabled: false
-        base_url: "https://api.anthropic.com/v1"
-        default_model: "claude-haiku-4-5-20251001"
-        timeout: 120
+        enabled: true
+        base_url: "https://api.z.ai/api/anthropic"
+        default_model: "GLM-4.7"
+        timeout: 1000
         max_retries: 3
+        api_key: ""  # paste your z.ai / Anthropic key here (never commit real keys)
     gemini:
         enabled: false
         base_url: "https://generativelanguage.googleapis.com/v1beta/openai"
@@ -244,8 +245,7 @@ agent:
 hitl:
     enabled: true
     port: 50052
-    request_timeout: 300  # seconds to wait for an operator hint (5 min)
-
+    request_timeout: 300 # seconds to wait for an operator hint (5 min)
 # ── Prompt Skills ─────────────────────────────────────
 # Markdown knowledge bundles (Hermes-style) loaded from `dir` at startup.
 # Skills matching a task are injected into the system prompt to guide the

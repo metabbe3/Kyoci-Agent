@@ -86,7 +86,7 @@ func (m *MemoryManager) Store(ctx context.Context, content string, memType kyoci
 				}
 				}
 				case kyoci.MemoryLongTerm, kyoci.MemorySkill:
-				id, err := m.longTerm.Store(entry.Content, entry.Type, entry.Metadata)
+				id, err := m.longTerm.Store(ctx, entry.Content, entry.Type, entry.Metadata)
 				if err != nil {
 				return "", kyoci.ErrMemoryStorage
 				}
@@ -119,7 +119,7 @@ func (m *MemoryManager) Recall(ctx context.Context, query string, limit int, mem
 
 	// Search long-term memory if requested
 	if memType == kyoci.MemoryLongTerm || memType == kyoci.MemorySkill || memType == 0 {
-		longTermResults, err := m.longTerm.Recall(query, limit, memType)
+		longTermResults, err := m.longTerm.Recall(ctx, query, limit, memType)
 		if err != nil {
 			m.logger.Warn("long-term recall failed", "error", err)
 		} else {
@@ -156,7 +156,7 @@ func (m *MemoryManager) Delete(ctx context.Context, id string) error {
 	}
 
 	// Try long-term
-	err := m.longTerm.Delete(id)
+	err := m.longTerm.Delete(ctx, id)
 	if err == nil {
 		m.logger.Debug("memory deleted from long-term", "id", id)
 		return nil

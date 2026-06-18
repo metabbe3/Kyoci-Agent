@@ -1,155 +1,74 @@
-import type {
-  ProviderSummary,
-  ModelRow,
-  ProviderConfigDTO,
-  HardwareSpecs,
-  RecommendResult,
-  UploadedFile,
-  SkillInfo,
-} from "./types";
+/**
+ * Backward-compatibility shim.
+ *
+ * The real implementations now live in `lib/api/`:
+ *   - `ApiClient` + singleton `apiClient` → `lib/api/client.ts`
+ *   - `ApiError` / `ApiErrorKind`          → `lib/api/errors.ts`
+ *   - `chatStream`                          → `lib/api/sse.ts`
+ *
+ * This module re-exports them and keeps the historical surface (`api`, `health`,
+ * `BackendUnreachable`, `chatStream`) so existing panel imports keep working
+ * during the gradual migration to TanStack Query + the new client class.
+ *
+ * Prefer importing from `@/lib/api/client`, `@/lib/api/errors`, `@/lib/api/sse`,
+ * or the `@/hooks/*` wrappers in new code.
+ */
 
-const BASE = ""; // same origin in prod, proxied by Vite in dev
+import { ApiClient, apiClient } from "./api/client";
+import { ApiError, ApiErrorKind } from "./api/errors";
+export { ApiError, ApiErrorKind } from "./api/errors";
+export { ApiClient, apiClient, devConsoleLogger } from "./api/client";
+export type { ApiLogger, ApiLogEvent, ApiClientOptions, RequestOptions } from "./api/client";
+export { chatStream } from "./api/sse";
 
-// BackendUnreachable is thrown when fetch rejects before any HTTP response —
-// i.e., no server listening, connection refused, DNS failure, CORS preflight
-// failure. HTTP 4xx/5xx responses are NOT this; those throw regular Error.
-// Panels can `instanceof BackendUnreachable` to surface actionable guidance
-// ("start the server") instead of Chrome's raw "Failed to fetch".
-export class BackendUnreachable extends Error {
+/**
+ * Legacy network-unreachable error. Now a thin subclass of {@link ApiError}
+ * (kind = `backend_unreachable`) so existing `instanceof BackendUnreachable`
+ * checks in panels keep working after the migration.
+ */
+export class BackendUnreachable extends ApiError {
   constructor(public readonly path: string, cause: unknown) {
-    super(`Cannot reach backend at ${path} — is the Go server running on :8080? (cause: ${cause instanceof Error ? cause.message : String(cause)})`);
+    const reason = cause instanceof Error ? cause.message : String(cause);
+    super(
+      `Cannot reach backend at ${path} — is the Go server running on :8080? (cause: ${reason})`,
+      { kind: ApiErrorKind.BackendUnreachable, cause }
+    );
     this.name = "BackendUnreachable";
   }
 }
 
-async function getJSON<T>(path: string): Promise<T> {
-  let r: Response;
-  try {
-    r = await fetch(`${BASE}${path}`);
-  } catch (e) {
-    throw new BackendUnreachable(path, e);
-  }
-  if (!r.ok) throw new Error(`${path}: ${r.status} ${await r.text()}`);
-  return r.json();
-}
-
-async function postJSON<T>(path: string, body: unknown): Promise<T> {
-  let r: Response;
-  try {
-    r = await fetch(`${BASE}${path}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-  } catch (e) {
-    throw new BackendUnreachable(path, e);
-  }
-  if (!r.ok) throw new Error(`${path}: ${r.status} ${await r.text()}`);
-  return r.json();
-}
-
-async function putJSON<T>(path: string, body: unknown): Promise<T> {
-  let r: Response;
-  try {
-    r = await fetch(`${BASE}${path}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-  } catch (e) {
-    throw new BackendUnreachable(path, e);
-  }
-  if (!r.ok) throw new Error(`${path}: ${r.status} ${await r.text()}`);
-  return r.json();
-}
-
+/**
+ * The historical `api` object. Delegates to the singleton {@link apiClient};
+ * method shapes (e.g. `api.providers(signal?)`) are unchanged so panels that
+ * have not yet migrated compile and behave identically.
+ */
 export const api = {
-  providers: () => getJSON<{ providers: ProviderSummary[] }>("/api/dashboard/providers"),
-  models: () => getJSON<{ models: ModelRow[] }>("/api/dashboard/models"),
-  getConfig: () => getJSON<{ providers: Record<string, ProviderConfigDTO> }>("/api/dashboard/config"),
-  putConfig: (providers: Record<string, ProviderConfigDTO>) =>
-    putJSON<{ ok: boolean; message: string }>("/api/dashboard/config", { providers }),
-  testConnection: (provider: string) =>
-    postJSON<{ available: boolean; error: string }>("/api/dashboard/test-connection", { provider }),
-  hardware: () => getJSON<HardwareSpecs>("/api/dashboard/hardware"),
-  recommendations: () => getJSON<RecommendResult>("/api/dashboard/recommendations"),
-  skills: () => getJSON<{ skills: SkillInfo[] }>("/api/dashboard/skills"),
-  status: () => getJSON<unknown>("/api/v1/status"),
-  uploadFile: async (file: File): Promise<UploadedFile> => {
-    const form = new FormData();
-    form.append("file", file);
-    let r: Response;
-    try {
-      r = await fetch(`${BASE}/api/dashboard/upload`, {
-        method: "POST",
-        body: form,
-      });
-    } catch (e) {
-      throw new BackendUnreachable("/api/dashboard/upload", e);
-    }
-    if (!r.ok) {
-      const txt = await r.text();
-      throw new Error(`/api/dashboard/upload: ${r.status} ${txt}`);
-    }
-    return r.json();
-  },
+  providers: (signal?: AbortSignal) => apiClient.providers({ signal }),
+  models: (signal?: AbortSignal) => apiClient.models({ signal }),
+  getConfig: (signal?: AbortSignal) => apiClient.getConfig({ signal }),
+  putConfig: (providers: Parameters<ApiClient["putConfig"]>[0], signal?: AbortSignal) =>
+    apiClient.putConfig(providers, { signal }),
+  testConnection: (provider: string, signal?: AbortSignal) =>
+    apiClient.testConnection(provider, { signal }),
+  hardware: (signal?: AbortSignal) => apiClient.hardware({ signal }),
+  recommendations: (signal?: AbortSignal) => apiClient.recommendations({ signal }),
+  skills: (signal?: AbortSignal) => apiClient.skills({ signal }),
+  status: (signal?: AbortSignal) => apiClient.status({ signal }),
+  uploadFile: (file: File, signal?: AbortSignal) => apiClient.uploadFile(file, { signal }),
 };
 
-// health probes /health and returns true on 200, false on any HTTP error, and
-// throws BackendUnreachable on network failure. Used by the Sidebar poll.
+/**
+ * health probes `/health` and returns true on 200, false on any HTTP error,
+ * and throws {@link BackendUnreachable} on network failure. Used by the
+ * Sidebar / Overview poll hooks. Kept on its own poll (not TanStack Query)
+ * because it is a low-frequency liveness check, not a data fetch.
+ */
 export async function health(): Promise<boolean> {
   let r: Response;
   try {
-    r = await fetch(`${BASE}/health`);
+    r = await fetch("/health");
   } catch (e) {
     throw new BackendUnreachable("/health", e);
   }
   return r.ok;
-}
-
-// chatStream POSTs a ChatRequest and yields SSE chunks as they arrive. We
-// can't use EventSource because it only does GET — fetch + ReadableStream
-// reader is the standard pattern.
-export async function* chatStream(
-  req: import("./types").ChatRequest,
-  signal?: AbortSignal
-): AsyncIterableIterator<import("./types").SSEChunk> {
-  let r: Response;
-  try {
-    r = await fetch(`${BASE}/api/dashboard/chat`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(req),
-      signal,
-    });
-  } catch (e) {
-    if (e instanceof DOMException && e.name === "AbortError") throw e;
-    throw new BackendUnreachable("/api/dashboard/chat", e);
-  }
-  if (!r.ok || !r.body) {
-    throw new Error(`chat: ${r.status} ${await r.text()}`);
-  }
-  const reader = r.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) return;
-    buffer += decoder.decode(value, { stream: true });
-    let idx;
-    while ((idx = buffer.indexOf("\n\n")) !== -1) {
-      const block = buffer.slice(0, idx);
-      buffer = buffer.slice(idx + 2);
-      for (const line of block.split("\n")) {
-        if (!line.startsWith("data: ")) continue;
-        const data = line.slice(6);
-        if (data === "[DONE]") return;
-        try {
-          yield JSON.parse(data) as import("./types").SSEChunk;
-        } catch {
-          // ignore malformed lines
-        }
-      }
-    }
-  }
 }

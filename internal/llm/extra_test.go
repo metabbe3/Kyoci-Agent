@@ -140,7 +140,7 @@ func TestStripToMinimal(t *testing.T) {
 				BaseURL:      "http://localhost:11434/v1",
 				DefaultModel: "llama2",
 			}
-			client, err := NewOpenAIClient("ollama", config)
+			client, err := newTestClient("ollama", config)
 			if err != nil {
 				t.Fatalf("Failed to create client: %v", err)
 			}
@@ -275,7 +275,7 @@ func TestParseRetryAfter(t *testing.T) {
 		APIKey:       "test-key",
 		DefaultModel: "gpt-4",
 	}
-	client, err := NewOpenAIClient("openai", config)
+	client, err := newTestClient("openai", config)
 	if err != nil {
 		t.Fatalf("Failed to create client: %v", err)
 	}
@@ -369,7 +369,7 @@ func TestParseRetryAfterEdgeCases(t *testing.T) {
 		APIKey:       "test-key",
 		DefaultModel: "gpt-4",
 	}
-	client, err := NewOpenAIClient("openai", config)
+	client, err := newTestClient("openai", config)
 	if err != nil {
 		t.Fatalf("Failed to create client: %v", err)
 	}

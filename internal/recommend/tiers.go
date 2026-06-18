@@ -15,9 +15,9 @@ type Tier struct {
 	Note        string `json:"note"`
 }
 
-// Tiers is ordered ascending by MinRAM. Recommend() walks it and classifies
+// tiers is ordered ascending by MinRAM. Recommend() walks it and classifies
 // each tier against the host's effective memory.
-var Tiers = []Tier{
+var tiers = []Tier{
 	{MinRAM: 8, Model: "qwen2.5:3b", ContextLen: 32_000, Note: "Lightweight, fits 8GB comfortably."},
 	{MinRAM: 16, Model: "llama3.1:8b", ContextLen: 128_000, Note: "Balanced default for 16GB."},
 	{MinRAM: 32, Model: "qwen2.5:14b", ContextLen: 128_000, Note: "Strong coding model for 32GB."},

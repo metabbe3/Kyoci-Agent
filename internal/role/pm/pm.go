@@ -8,7 +8,7 @@ import (
 // DefaultConfig returns the fallback configuration for the PM role.
 //
 // Note: at runtime the prompt in internal/config/role_defaults.go wins
-// (cfg.Roles["pm"] is always populated from RoleDefaults). This config is
+// (cfg.Roles["pm"] is always populated from the config role defaults). This config is
 // used only by tests that call DefaultConfig() directly or by programmatic
 // callers that bypass the config loader. Kept in sync stylistically with
 // the runtime version so behaviour matches when it does run.

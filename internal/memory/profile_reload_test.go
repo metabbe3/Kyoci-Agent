@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"context"
 	"encoding/json"
 	"path/filepath"
 	"testing"
@@ -45,7 +46,7 @@ func storeProfileViaLongTerm(t *testing.T, ltm *LongTermMemory, key, value, cate
 		"category": category,
 		"key":      key,
 	}
-	if _, err := ltm.Store(string(data), kyoci.MemoryLongTerm, metadata); err != nil {
+	if _, err := ltm.Store(context.Background(), string(data), kyoci.MemoryLongTerm, metadata); err != nil {
 		t.Fatalf("ltm.Store: %v", err)
 	}
 }
@@ -70,7 +71,7 @@ func TestProfileStore_Reload_SeesNewEntries(t *testing.T) {
 	}
 
 	// FIX: Reload refreshes the cache from SQLite.
-	if err := ps.Reload(); err != nil {
+	if err := ps.Reload(context.Background()); err != nil {
 		t.Fatalf("Reload: %v", err)
 	}
 
@@ -91,7 +92,7 @@ func TestProfileStore_Reload_SeesNewEntries(t *testing.T) {
 func TestProfileStore_Reload_NoErrorOnEmptyDB(t *testing.T) {
 	ps, _ := newTestProfileStore(t)
 
-	if err := ps.Reload(); err != nil {
+	if err := ps.Reload(context.Background()); err != nil {
 		t.Fatalf("Reload on empty DB should not error: %v", err)
 	}
 	if got := ps.FormatForPrompt(); got != "" {

@@ -105,7 +105,7 @@ func (ee *ExperienceEngine) Storage() *LongTermMemory {
 }
 
 // Record stores a new experience in L3 memory.
-func (ee *ExperienceEngine) Record(rec ExperienceRecord) error {
+func (ee *ExperienceEngine) Record(ctx context.Context, rec ExperienceRecord) error {
 	ee.mu.Lock()
 	defer ee.mu.Unlock()
 
@@ -127,7 +127,7 @@ func (ee *ExperienceEngine) Record(rec ExperienceRecord) error {
 		"role":       rec.Role,
 	}
 
-	_, err = ee.storage.Store(string(data), kyoci.MemoryLongTerm, metadata)
+	_, err = ee.storage.Store(ctx, string(data), kyoci.MemoryLongTerm, metadata)
 	if err != nil {
 		return fmt.Errorf("failed to store experience: %w", err)
 	}
@@ -143,7 +143,7 @@ func (ee *ExperienceEngine) Record(rec ExperienceRecord) error {
 
 // FindSimilar retrieves past experiences with similar tasks.
 // Uses FTS5 full-text search on the task content.
-func (ee *ExperienceEngine) FindSimilar(task string, limit int) ([]ExperienceRecord, error) {
+func (ee *ExperienceEngine) FindSimilar(ctx context.Context, task string, limit int) ([]ExperienceRecord, error) {
 	ee.mu.RLock()
 	defer ee.mu.RUnlock()
 
@@ -152,7 +152,7 @@ func (ee *ExperienceEngine) FindSimilar(task string, limit int) ([]ExperienceRec
 	}
 
 	// Search L3 for experiences matching this task
-	entries, err := ee.storage.Recall(task, limit, kyoci.MemoryLongTerm)
+	entries, err := ee.storage.Recall(ctx, task, limit, kyoci.MemoryLongTerm)
 	if err != nil {
 		return nil, fmt.Errorf("failed to search experiences: %w", err)
 	}
@@ -173,7 +173,7 @@ func (ee *ExperienceEngine) FindSimilar(task string, limit int) ([]ExperienceRec
 }
 
 // GetStats computes aggregate statistics from all recorded experiences.
-func (ee *ExperienceEngine) GetStats() ExperienceStats {
+func (ee *ExperienceEngine) GetStats(ctx context.Context) ExperienceStats {
 	ee.mu.RLock()
 	defer ee.mu.RUnlock()
 
@@ -182,7 +182,7 @@ func (ee *ExperienceEngine) GetStats() ExperienceStats {
 	}
 
 	// Query all experiences (broad search)
-	entries, err := ee.storage.Recall("", 500, kyoci.MemoryLongTerm)
+	entries, err := ee.storage.Recall(ctx, "", 500, kyoci.MemoryLongTerm)
 	if err != nil {
 		ee.logger.Warn("failed to get experience stats", "error", err)
 		return stats
@@ -226,8 +226,8 @@ func (ee *ExperienceEngine) GetStats() ExperienceStats {
 // SuggestApproach generates a context string from past experiences for similar tasks.
 // This is injected into the system prompt to help the agent learn from history.
 // Returns empty string if no relevant experiences exist.
-func (ee *ExperienceEngine) SuggestApproach(task string) string {
-	records, err := ee.FindSimilar(task, 3)
+func (ee *ExperienceEngine) SuggestApproach(ctx context.Context, task string) string {
+	records, err := ee.FindSimilar(ctx, task, 3)
 	if err != nil || len(records) == 0 {
 		return ""
 	}
@@ -293,32 +293,32 @@ func NewProfileStore(ltm *LongTermMemory, logger *slog.Logger) *ProfileStore {
 		cache:   make(map[string]ProfileEntry),
 		logger:  logger.With("component", "profile-store"),
 	}
-	ps.loadCache()
+	ps.loadCache(context.Background())
 	return ps
 }
 
 // loadCache loads all profile entries from L3 into memory.
 // Called WITHOUT the write lock — used during construction.
-func (ps *ProfileStore) loadCache() {
-	ps.loadCacheLocked(false)
+func (ps *ProfileStore) loadCache(ctx context.Context) {
+	ps.loadCacheLocked(ctx, false)
 }
 
 // Reload refreshes the in-memory cache from SQLite. Use this to pick up
 // entries written by other paths (e.g. the `remember` tool, which writes
 // via MemoryStore.Store and bypasses the ProfileStore cache). Thread-safe.
-func (ps *ProfileStore) Reload() error {
+func (ps *ProfileStore) Reload(ctx context.Context) error {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
-	ps.loadCacheLocked(true)
+	ps.loadCacheLocked(ctx, true)
 	return nil
 }
 
 // loadCacheLocked rebuilds ps.cache from SQLite. If holdLock is true, the
 // caller already holds ps.mu (Reload path); if false, no lock is held
 // (construction path).
-func (ps *ProfileStore) loadCacheLocked(holdLock bool) {
+func (ps *ProfileStore) loadCacheLocked(ctx context.Context, holdLock bool) {
 	_ = holdLock // lock acquisition is the caller's responsibility
-	entries, err := ps.storage.Recall("", 200, kyoci.MemoryLongTerm)
+	entries, err := ps.storage.Recall(ctx, "", 200, kyoci.MemoryLongTerm)
 	if err != nil {
 		ps.logger.Warn("failed to load profile cache", "error", err)
 		return
@@ -344,7 +344,7 @@ func (ps *ProfileStore) loadCacheLocked(holdLock bool) {
 }
 
 // Set stores or updates a profile entry.
-func (ps *ProfileStore) Set(key, value, category, source string) error {
+func (ps *ProfileStore) Set(ctx context.Context, key, value, category, source string) error {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 
@@ -374,7 +374,7 @@ func (ps *ProfileStore) Set(key, value, category, source string) error {
 		"key":      key,
 	}
 
-	_, err = ps.storage.Store(string(data), kyoci.MemoryLongTerm, metadata)
+	_, err = ps.storage.Store(ctx, string(data), kyoci.MemoryLongTerm, metadata)
 	if err != nil {
 		return fmt.Errorf("failed to store profile entry: %w", err)
 	}
@@ -503,7 +503,7 @@ func (re *ReflectionEngine) Reflect(ctx context.Context, rec ExperienceRecord) (
 				"category": r.Category,
 				"task":     rec.Task,
 			}
-			_, err := re.storage.Store(r.Insight, kyoci.MemoryLongTerm, metadata)
+			_, err := re.storage.Store(ctx, r.Insight, kyoci.MemoryLongTerm, metadata)
 			if err != nil {
 				re.logger.Warn("failed to store reflection lesson", "error", err)
 			}
@@ -520,7 +520,7 @@ func (re *ReflectionEngine) Reflect(ctx context.Context, rec ExperienceRecord) (
 }
 
 // GetRelevantLessons retrieves lessons that might be relevant to a given task.
-func (re *ReflectionEngine) GetRelevantLessons(task string, limit int) string {
+func (re *ReflectionEngine) GetRelevantLessons(ctx context.Context, task string, limit int) string {
 	re.mu.RLock()
 	defer re.mu.RUnlock()
 
@@ -528,7 +528,7 @@ func (re *ReflectionEngine) GetRelevantLessons(task string, limit int) string {
 		limit = 3
 	}
 
-	entries, err := re.storage.Recall(task, limit, kyoci.MemoryLongTerm)
+	entries, err := re.storage.Recall(ctx, task, limit, kyoci.MemoryLongTerm)
 	if err != nil {
 		return ""
 	}
@@ -595,7 +595,7 @@ func (ci *ContextInjector) Inject(task string) string {
 	// 1. Inject user profile (reload first so entries written by prior
 	//    sessions via the `remember` tool are visible mid-process).
 	if ci.profile != nil {
-		_ = ci.profile.Reload()
+		_ = ci.profile.Reload(context.Background())
 		profileCtx := ci.profile.FormatForPrompt()
 		if profileCtx != "" {
 			sb.WriteString(profileCtx)
@@ -605,7 +605,7 @@ func (ci *ContextInjector) Inject(task string) string {
 
 	// 2. Inject relevant past experiences (successful approaches)
 	if ci.experience != nil {
-		expCtx := ci.experience.SuggestApproach(task)
+		expCtx := ci.experience.SuggestApproach(context.Background(), task)
 		if expCtx != "" {
 			if hasContent {
 				sb.WriteString("\n")
@@ -617,7 +617,7 @@ func (ci *ContextInjector) Inject(task string) string {
 
 	// 3. Inject relevant lessons
 	if ci.reflection != nil {
-		lessonCtx := ci.reflection.GetRelevantLessons(task, 3)
+		lessonCtx := ci.reflection.GetRelevantLessons(context.Background(), task, 3)
 		if lessonCtx != "" {
 			if hasContent {
 				sb.WriteString("\n")

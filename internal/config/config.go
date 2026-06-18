@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/metabbe3/Kyoci-Agent/internal/apperr"
 	"gopkg.in/yaml.v3"
 )
 
@@ -36,6 +37,12 @@ type ServerConfig struct {
 	// TLSKeyFile is the path to the TLS private key file
 	// Required if TLSEnabled is true
 	TLSKeyFile string `yaml:"tls_key_file" env:"KYOCI_TLS_KEY_FILE"`
+
+	// AgentGRPCPort is the TCP port for the optional AgentService gRPC API
+	// (Execute/ExecuteStream/GetStatus). 0 (default) means the server is NOT
+	// started — the HTTP API and the benchmark suite are unaffected. Setting a
+	// positive port enables the gRPC surface alongside the HTTP server.
+	AgentGRPCPort int `yaml:"agent_grpc_port" env:"KYOCI_AGENT_GRPC_PORT"`
 }
 
 // GetGRPCPort returns the gRPC port.
@@ -497,9 +504,9 @@ func Default() *Config {
 			Format: "json",
 		},
 		Memory: MemoryConfig{
-			DBPath:               "./data/memory.db",
-			CompactionThreshold:  0.75,
-			MaxShortTermTokens:   4000,
+			DBPath:              "./data/memory.db",
+			CompactionThreshold: 0.75,
+			MaxShortTermTokens:  4000,
 		},
 		Pool: PoolConfig{
 			Workers:   4,
@@ -546,12 +553,12 @@ func Default() *Config {
 	}
 
 	// Apply provider defaults
-	for name, defaults := range ProviderDefaults {
+	for name, defaults := range providerDefaults {
 		cfg.Providers[name] = defaults
 	}
 
 	// Apply role defaults
-	for name, defaults := range RoleDefaults {
+	for name, defaults := range roleDefaults {
 		cfg.Roles[name] = &defaults
 	}
 
@@ -583,7 +590,7 @@ func Load(path string) (*Config, error) {
 	}
 
 	// Merge role defaults: if YAML overwrote a role losing its system_prompt, restore from defaults
-	for name, defaultRole := range RoleDefaults {
+	for name, defaultRole := range roleDefaults {
 		if role, exists := cfg.Roles[name]; exists {
 			if role.SystemPrompt == "" {
 				role.SystemPrompt = defaultRole.SystemPrompt
@@ -617,76 +624,80 @@ func Load(path string) (*Config, error) {
 	return cfg, nil
 }
 
-// Validate validates all configuration values and returns an error if any are invalid.
+// Validate validates all configuration values and returns an error if any are
+// invalid. Errors are typed apperr errors (Kind=Invalid) with stable codes so
+// the API layer can map them to HTTP 400 via apperr.CodeToHTTP. The human
+// messages are unchanged from the original fmt.Errorf forms for log/test
+// substring compatibility.
 func (c *Config) Validate() error {
 	// Validate server config
 	if c.Server.GRPCPort <= 0 || c.Server.GRPCPort > 65535 {
-		return fmt.Errorf("invalid grpc_port: must be between 1 and 65535")
+		return apperr.Newf("config.grpc_port", apperr.KindInvalid, "invalid grpc_port: must be between 1 and 65535")
 	}
 	if c.Server.RESTPort <= 0 || c.Server.RESTPort > 65535 {
-		return fmt.Errorf("invalid rest_port: must be between 1 and 65535")
+		return apperr.Newf("config.rest_port", apperr.KindInvalid, "invalid rest_port: must be between 1 and 65535")
 	}
 	if c.Server.TLSEnabled {
 		if c.Server.TLSCertFile == "" {
-			return fmt.Errorf("tls_enabled is true but tls_cert_file is not specified")
+			return apperr.Newf("config.tls_cert_file", apperr.KindInvalid, "tls_enabled is true but tls_cert_file is not specified")
 		}
 		if c.Server.TLSKeyFile == "" {
-			return fmt.Errorf("tls_enabled is true but tls_key_file is not specified")
+			return apperr.Newf("config.tls_key_file", apperr.KindInvalid, "tls_enabled is true but tls_key_file is not specified")
 		}
 	}
 
 	// Validate logging config
 	validLevels := map[string]bool{"debug": true, "info": true, "warn": true, "error": true}
 	if !validLevels[c.Logging.Level] {
-		return fmt.Errorf("invalid log_level: must be one of debug, info, warn, error")
+		return apperr.Newf("config.log_level", apperr.KindInvalid, "invalid log_level: must be one of debug, info, warn, error")
 	}
 	if c.Logging.Format != "json" && c.Logging.Format != "text" {
-		return fmt.Errorf("invalid log_format: must be json or text")
+		return apperr.Newf("config.log_format", apperr.KindInvalid, "invalid log_format: must be json or text")
 	}
 
 	// Validate memory config
 	if c.Memory.DBPath == "" {
-		return fmt.Errorf("db_path cannot be empty")
+		return apperr.Newf("config.db_path", apperr.KindInvalid, "db_path cannot be empty")
 	}
 	if c.Memory.CompactionThreshold < 0.0 || c.Memory.CompactionThreshold > 1.0 {
-		return fmt.Errorf("compaction_threshold must be between 0.0 and 1.0")
+		return apperr.Newf("config.compaction_threshold", apperr.KindInvalid, "compaction_threshold must be between 0.0 and 1.0")
 	}
 	if c.Memory.MaxShortTermTokens < 0 {
-		return fmt.Errorf("max_shortterm_tokens must be non-negative")
+		return apperr.Newf("config.max_shortterm_tokens", apperr.KindInvalid, "max_shortterm_tokens must be non-negative")
 	}
 
 	// Validate pool config
 	if c.Pool.Workers <= 0 {
-		return fmt.Errorf("workers must be positive")
+		return apperr.Newf("config.workers", apperr.KindInvalid, "workers must be positive")
 	}
 	if c.Pool.QueueSize <= 0 {
-		return fmt.Errorf("queue_size must be positive")
+		return apperr.Newf("config.queue_size", apperr.KindInvalid, "queue_size must be positive")
 	}
 
 	// Validate security config
 	if c.Security.RateLimit <= 0 {
-		return fmt.Errorf("rate_limit must be positive")
+		return apperr.Newf("config.rate_limit", apperr.KindInvalid, "rate_limit must be positive")
 	}
 
 	// Validate providers
 	for name, provider := range c.Providers {
 		if provider.Enabled {
 			if provider.BaseURL == "" {
-				return fmt.Errorf("provider %s is enabled but has no base_url", name)
+				return apperr.Newf("config.provider_base_url", apperr.KindInvalid, "provider %s is enabled but has no base_url", name)
 			}
 			if provider.APIKey == "" && !isLocalProviderName(name) {
 				// Local OpenAI-compatible servers (Ollama, LM Studio) don't
 				// require an API key. Anything else (cloud APIs) does.
-				return fmt.Errorf("provider %s is enabled but has no api_key", name)
+				return apperr.Newf("config.provider_api_key", apperr.KindInvalid, "provider %s is enabled but has no api_key", name)
 			}
 			if provider.DefaultModel == "" {
-				return fmt.Errorf("provider %s is enabled but has no default_model", name)
+				return apperr.Newf("config.provider_default_model", apperr.KindInvalid, "provider %s is enabled but has no default_model", name)
 			}
 			if provider.MaxRetries < 0 {
-				return fmt.Errorf("provider %s has invalid max_retries: must be non-negative", name)
+				return apperr.Newf("config.provider_max_retries", apperr.KindInvalid, "provider %s has invalid max_retries: must be non-negative", name)
 			}
 			if provider.Timeout <= 0 {
-				return fmt.Errorf("provider %s has invalid timeout: must be positive", name)
+				return apperr.Newf("config.provider_timeout", apperr.KindInvalid, "provider %s has invalid timeout: must be positive", name)
 			}
 		}
 	}
@@ -694,39 +705,39 @@ func (c *Config) Validate() error {
 	// Validate roles
 	for name, role := range c.Roles {
 		if role.SystemPrompt == "" {
-			return fmt.Errorf("role %s has empty system_prompt", name)
+			return apperr.Newf("config.role_system_prompt", apperr.KindInvalid, "role %s has empty system_prompt", name)
 		}
 		if role.MaxIterations <= 0 {
-			return fmt.Errorf("role %s has invalid max_iterations: must be positive", name)
+			return apperr.Newf("config.role_max_iterations", apperr.KindInvalid, "role %s has invalid max_iterations: must be positive", name)
 		}
 		if role.PreferredProvider != "" {
 			if _, exists := c.Providers[role.PreferredProvider]; !exists {
-				return fmt.Errorf("role %s references unknown provider %s", name, role.PreferredProvider)
+				return apperr.Newf("config.role_unknown_provider", apperr.KindInvalid, "role %s references unknown provider %s", name, role.PreferredProvider)
 			}
 		}
 	}
 
 	// Validate thinking config
 	if c.Agent.Thinking.ToolBudget <= 0 {
-		return fmt.Errorf("agent.thinking.tool_budget must be positive")
+		return apperr.Newf("config.thinking_tool_budget", apperr.KindInvalid, "agent.thinking.tool_budget must be positive")
 	}
 	if c.Agent.Thinking.MaxReflections < 0 {
-		return fmt.Errorf("agent.thinking.max_reflections must be non-negative")
+		return apperr.Newf("config.thinking_max_reflections", apperr.KindInvalid, "agent.thinking.max_reflections must be non-negative")
 	}
 	if c.Agent.Thinking.MaxReplans < 0 {
-		return fmt.Errorf("agent.thinking.max_replans must be non-negative")
+		return apperr.Newf("config.thinking_max_replans", apperr.KindInvalid, "agent.thinking.max_replans must be non-negative")
 	}
 	if c.Agent.Thinking.ConfidenceThreshold < 0.0 || c.Agent.Thinking.ConfidenceThreshold > 1.0 {
-		return fmt.Errorf("agent.thinking.confidence_threshold must be between 0.0 and 1.0")
+		return apperr.Newf("config.thinking_confidence_threshold", apperr.KindInvalid, "agent.thinking.confidence_threshold must be between 0.0 and 1.0")
 	}
 
 	// Validate prompt-skill config
 	if c.PromptSkill.Enabled {
 		if c.PromptSkill.MaxSkillsPerTask <= 0 {
-			return fmt.Errorf("prompt_skills.max_skills_per_task must be positive when enabled")
+			return apperr.Newf("config.prompt_skills_max", apperr.KindInvalid, "prompt_skills.max_skills_per_task must be positive when enabled")
 		}
 		if c.PromptSkill.MaxTotalChars <= 0 {
-			return fmt.Errorf("prompt_skills.max_total_chars must be positive when enabled")
+			return apperr.Newf("config.prompt_skills_chars", apperr.KindInvalid, "prompt_skills.max_total_chars must be positive when enabled")
 		}
 	}
 
@@ -761,6 +772,10 @@ func (c *Config) applyEnvOverrides() error {
 	if v := os.Getenv("KYOCI_TLS_KEY_FILE"); v != "" {
 		c.Server.TLSKeyFile = v
 		slog.Info("Override applied", "setting", "tls_key_file", "value", v)
+	}
+	if v := os.Getenv("KYOCI_AGENT_GRPC_PORT"); v != "" {
+		c.Server.AgentGRPCPort = parseIntEnv(v, c.Server.AgentGRPCPort)
+		slog.Info("Override applied", "setting", "agent_grpc_port", "value", c.Server.AgentGRPCPort)
 	}
 
 	// Logging overrides

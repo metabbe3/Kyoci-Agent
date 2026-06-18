@@ -1,10 +1,13 @@
 package memory
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -25,6 +28,15 @@ type LongTermMemory struct {
 
 // NewLongTermMemory creates a new long-term memory instance with SQLite backend.
 func NewLongTermMemory(dbPath string, logger *slog.Logger) (*LongTermMemory, error) {
+	// Ensure the database file's parent directory exists (e.g. "data/" for
+	// "data/kyoci.db"). Without this the agent crashes on a fresh checkout where
+	// the runtime data dir is gitignored. In-memory DBs (":memory:") have no dir.
+	if dir := filepath.Dir(dbPath); dir != "" && dir != "." && dir != ":" {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return nil, fmt.Errorf("failed to create database directory %q: %w", dir, err)
+		}
+	}
+
 	// Open database connection
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
@@ -95,7 +107,7 @@ func (ltm *LongTermMemory) createSchema() error {
 		CREATE INDEX IF NOT EXISTS idx_memories_created_at ON memories(created_at);
 	`
 
-	_, err := ltm.db.Exec(schema)
+	_, err := ltm.db.ExecContext(context.Background(), schema)
 	if err != nil {
 		return fmt.Errorf("failed to create schema: %w", err)
 	}
@@ -104,7 +116,7 @@ func (ltm *LongTermMemory) createSchema() error {
 }
 
 // Store stores content in long-term memory and returns the ID.
-func (ltm *LongTermMemory) Store(content string, memType kyoci.MemoryType, metadata map[string]string) (string, error) {
+func (ltm *LongTermMemory) Store(ctx context.Context, content string, memType kyoci.MemoryType, metadata map[string]string) (string, error) {
 	id := generateID()
 	metadataJSON, _ := json.Marshal(metadata)
 	createdAt := time.Now()
@@ -114,7 +126,7 @@ func (ltm *LongTermMemory) Store(content string, memType kyoci.MemoryType, metad
 		VALUES (?, ?, ?, ?, ?, 0.0)
 	`
 
-	_, err := ltm.db.Exec(query, id, content, int(memType), string(metadataJSON), createdAt.String())
+	_, err := ltm.db.ExecContext(ctx, query, id, content, int(memType), string(metadataJSON), createdAt.String())
 	if err != nil {
 		ltm.logger.Error("failed to store memory entry", "id", id, "error", err)
 		return "", fmt.Errorf("failed to store memory entry: %w", err)
@@ -125,7 +137,7 @@ func (ltm *LongTermMemory) Store(content string, memType kyoci.MemoryType, metad
 }
 
 // Recall retrieves memory entries relevant to a query using FTS5 with BM25 ranking.
-func (ltm *LongTermMemory) Recall(query string, limit int, memType kyoci.MemoryType) ([]kyoci.MemoryEntry, error) {
+func (ltm *LongTermMemory) Recall(ctx context.Context, query string, limit int, memType kyoci.MemoryType) ([]kyoci.MemoryEntry, error) {
 	// Build the query based on whether we need type filtering
 	var rows *sql.Rows
 	var err error
@@ -151,7 +163,7 @@ func (ltm *LongTermMemory) Recall(query string, limit int, memType kyoci.MemoryT
 			queryBuilder += " LIMIT ?"
 			args = append(args, limit)
 		}
-		rows, err = ltm.db.Query(queryBuilder, args...)
+		rows, err = ltm.db.QueryContext(ctx, queryBuilder, args...)
 		if err != nil {
 			return nil, fmt.Errorf("failed to query memories: %w", err)
 		}
@@ -175,10 +187,10 @@ func (ltm *LongTermMemory) Recall(query string, limit int, memType kyoci.MemoryT
 		}
 		ftsQuery := escapeFTSQuery(query)
 		args = append([]interface{}{ftsQuery}, args...)
-		rows, err = ltm.db.Query(queryBuilder, args...)
+		rows, err = ltm.db.QueryContext(ctx, queryBuilder, args...)
 		if err != nil {
 			ltm.logger.Warn("FTS5 search failed, falling back to keyword search", "error", err)
-			return ltm.fallbackSearch(query, limit, memType)
+			return ltm.fallbackSearch(ctx, query, limit, memType)
 		}
 		defer rows.Close()
 	}
@@ -193,9 +205,9 @@ func (ltm *LongTermMemory) Recall(query string, limit int, memType kyoci.MemoryT
 }
 
 // Delete removes a memory entry by ID.
-func (ltm *LongTermMemory) Delete(id string) error {
+func (ltm *LongTermMemory) Delete(ctx context.Context, id string) error {
 	query := `DELETE FROM memories WHERE id = ?`
-	result, err := ltm.db.Exec(query, id)
+	result, err := ltm.db.ExecContext(ctx, query, id)
 	if err != nil {
 		ltm.logger.Error("failed to delete memory entry", "id", id, "error", err)
 		return fmt.Errorf("failed to delete memory entry: %w", err)
@@ -211,8 +223,8 @@ func (ltm *LongTermMemory) Delete(id string) error {
 }
 
 // Search performs a hybrid search: FTS5 + keyword fallback.
-func (ltm *LongTermMemory) Search(query string, limit int) []kyoci.MemoryEntry {
-	entries, err := ltm.Recall(query, limit, 0)
+func (ltm *LongTermMemory) Search(ctx context.Context, query string, limit int) []kyoci.MemoryEntry {
+	entries, err := ltm.Recall(ctx, query, limit, 0)
 	if err != nil {
 		ltm.logger.Error("search failed", "query", query, "error", err)
 		return []kyoci.MemoryEntry{}
@@ -221,7 +233,7 @@ func (ltm *LongTermMemory) Search(query string, limit int) []kyoci.MemoryEntry {
 }
 
 // fallbackSearch performs a simple keyword search when FTS5 fails.
-func (ltm *LongTermMemory) fallbackSearch(query string, limit int, memType kyoci.MemoryType) ([]kyoci.MemoryEntry, error) {
+func (ltm *LongTermMemory) fallbackSearch(ctx context.Context, query string, limit int, memType kyoci.MemoryType) ([]kyoci.MemoryEntry, error) {
 	queryBuilder := `
 		SELECT id, content, type, metadata_json, created_at, relevance_score
 		FROM memories
@@ -240,7 +252,7 @@ func (ltm *LongTermMemory) fallbackSearch(query string, limit int, memType kyoci
 		args = append(args, limit)
 	}
 
-	rows, err := ltm.db.Query(queryBuilder, args...)
+	rows, err := ltm.db.QueryContext(ctx, queryBuilder, args...)
 	if err != nil {
 		return nil, fmt.Errorf("fallback search failed: %w", err)
 	}
@@ -339,13 +351,13 @@ func (ltm *LongTermMemory) Stats() MemoryStats {
 	// Get total count
 	var totalCount, shortTermCount, longTermCount, skillCount, totalTokens sql.NullInt64
 
-	ltm.db.QueryRow("SELECT COUNT(*) FROM memories").Scan(&totalCount)
-	ltm.db.QueryRow("SELECT COUNT(*) FROM memories WHERE type = 0").Scan(&shortTermCount)
-	ltm.db.QueryRow("SELECT COUNT(*) FROM memories WHERE type = 1").Scan(&longTermCount)
-	ltm.db.QueryRow("SELECT COUNT(*) FROM memories WHERE type = 2").Scan(&skillCount)
+	ltm.db.QueryRowContext(context.Background(),"SELECT COUNT(*) FROM memories").Scan(&totalCount)
+	ltm.db.QueryRowContext(context.Background(),"SELECT COUNT(*) FROM memories WHERE type = 0").Scan(&shortTermCount)
+	ltm.db.QueryRowContext(context.Background(),"SELECT COUNT(*) FROM memories WHERE type = 1").Scan(&longTermCount)
+	ltm.db.QueryRowContext(context.Background(),"SELECT COUNT(*) FROM memories WHERE type = 2").Scan(&skillCount)
 
 	// Estimate tokens (rough: length/4 per entry)
-	ltm.db.QueryRow("SELECT SUM(LENGTH(content) / 4) FROM memories").Scan(&totalTokens)
+	ltm.db.QueryRowContext(context.Background(),"SELECT SUM(LENGTH(content) / 4) FROM memories").Scan(&totalTokens)
 
 	if totalCount.Valid {
 		stats.TotalEntries = int(totalCount.Int64)

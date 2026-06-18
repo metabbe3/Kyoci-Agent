@@ -1,10 +1,11 @@
 package llm
 
 import (
-	"fmt"
 	"log/slog"
 	"sync"
 	"time"
+
+	"github.com/metabbe3/Kyoci-Agent/internal/apperr"
 )
 
 // ==============================================================================
@@ -84,7 +85,7 @@ func (cb *CircuitBreaker) RecordFailure() error {
 		cb.logger.Warn("circuit breaker opened",
 			"failures", cb.failures,
 			"threshold", cb.failureThreshold)
-		return fmt.Errorf("circuit breaker is open")
+		return apperr.ErrCircuitOpen
 	}
 
 	return nil

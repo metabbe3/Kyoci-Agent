@@ -1,16 +1,11 @@
 package gateway
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
-	"mime/multipart"
 	"net/http"
-	"net/url"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -22,28 +17,27 @@ import (
 
 // TelegramGateway connects Kyoci Agent to Telegram via Bot API long-polling.
 // Goroutine-safe: handles multiple concurrent chats.
+//
+// The gateway is split across focused files:
+//   - tgclient.go: the Bot API HTTP client (tg *tgClient) and wire types.
+//   - store.go:    per-chat state (ChatStore) behind a single mutex.
+//   - approval.go: severity classification + approval-flow helpers.
+//   - render.go:   markdown→HTML and message-sizing pure helpers.
+//   - activity.go: the ActivityTracker + result telemetry types.
+//
+// telegram.go is the coordinator: Start / handleMessage / handleCallbackQuery
+// and the command router.
 type TelegramGateway struct {
-	token      string
-	apiBase    string
-	orch       OrchestratorClient
-	logger     *slog.Logger
-	httpClient *http.Client
+	// tg is the Bot API HTTP client wrapper (httptest-able via injected *http.Client).
+	tg     *tgClient
+	token  string // kept for the "has token" log line in Start
+	orch   OrchestratorClient
+	logger *slog.Logger
 
 	// Polling state
-	offset    int64
-	started   bool
-	mu        sync.RWMutex
-
-	// Per-chat state: tracks which users are in which role mode
-	chatRoles  map[int64]string
-	chatMu     sync.RWMutex
-
-	// Per-chat conversation history for context
-	chatHistory map[int64][]convTurn
-
-	// Rate limiting per chat: prevents spam
-	lastMsg    map[int64]time.Time
-	rateMu     sync.Mutex
+	offset  int64
+	started bool
+	mu      sync.RWMutex
 
 	// Allowed chat IDs (empty = allow all)
 	allowedChats map[int64]bool
@@ -55,18 +49,34 @@ type TelegramGateway struct {
 	pendingApprovals map[string]chan approvalResponse
 	approvalMu       sync.Mutex
 
-	// Trust mode: when enabled, auto-approves all tools for that chat
-	trustedChats map[int64]bool
-
-	// Session whitelist: per-chat, tool names that were approved once → auto-pass
-	sessionWhitelist map[int64]map[string]bool
-	whitelistMu      sync.Mutex
+	// store holds all per-chat mutable state (roles, history, rate-limit,
+	// trust, session whitelist) behind a single RWMutex.
+	store *ChatStore
 }
 
 // approvalResponse carries the user's decision from callback to the waiting goroutine.
 type approvalResponse struct {
-	approved   bool
-	whitelist  bool // if true, add this tool to session whitelist
+	approved  bool
+	whitelist bool // if true, add this tool to session whitelist
+}
+
+// Name returns the gateway identifier (satisfies Gateway).
+func (gw *TelegramGateway) Name() string { return "telegram" }
+
+// Stop drains pending approvals so any in-flight Decide callers unblock with a
+// deny instead of waiting on the (now-shutting-down) gateway. Start itself
+// returns once its context is canceled by the caller.
+func (gw *TelegramGateway) Stop(_ context.Context) error {
+	gw.approvalMu.Lock()
+	defer gw.approvalMu.Unlock()
+	for key, ch := range gw.pendingApprovals {
+		select {
+		case ch <- approvalResponse{approved: false}:
+		default:
+		}
+		delete(gw.pendingApprovals, key)
+	}
+	return nil
 }
 
 // OrchestratorClient is the interface the gateway needs to execute tasks.
@@ -84,59 +94,6 @@ type TelegramConfig struct {
 	PollTimeout  int    `yaml:"poll_timeout" env:"KYOCI_TELEGRAM_POLL_TIMEOUT"`   // seconds, default 30
 }
 
-// convTurn stores one user-assistant exchange for conversation history.
-type convTurn struct {
-	user      string
-	assistant string
-}
-
-// Telegram API types — only what we need.
-
-type tgUpdate struct {
-	UpdateID      int64            `json:"update_id"`
-	Message       *tgMessage       `json:"message"`
-	CallbackQuery *tgCallbackQuery `json:"callback_query"`
-}
-
-type tgCallbackQuery struct {
-	ID      string     `json:"id"`
-	From    *tgUser    `json:"from"`
-	Data    string     `json:"data"`
-	Message *tgMessage `json:"message"`
-}
-
-type tgMessage struct {
-	MessageID int64  `json:"message_id"`
-	From      *tgUser `json:"from"`
-	Chat      tgChat  `json:"chat"`
-	Text      string  `json:"text"`
-}
-
-type tgUser struct {
-	ID        int64  `json:"id"`
-	FirstName string `json:"first_name"`
-	LastName  string `json:"last_name"`
-	Username  string `json:"username"`
-}
-
-type tgChat struct {
-	ID   int64  `json:"id"`
-	Type string `json:"type"`
-}
-
-type tgAPIResponse struct {
-	OK          bool            `json:"ok"`
-	Result      json.RawMessage `json:"result"`
-	Description string          `json:"description"`
-}
-
-type tgSendMessageRequest struct {
-	ChatID    int64  `json:"chat_id"`
-	Text      string `json:"text"`
-	ParseMode string `json:"parse_mode,omitempty"`
-	ReplyTo   int64  `json:"reply_to_message_id,omitempty"`
-}
-
 // NewTelegramGateway creates a new Telegram bot gateway.
 func NewTelegramGateway(cfg TelegramConfig, orch OrchestratorClient, logger *slog.Logger) *TelegramGateway {
 	if logger == nil {
@@ -149,19 +106,14 @@ func NewTelegramGateway(cfg TelegramConfig, orch OrchestratorClient, logger *slo
 	}
 
 	gw := &TelegramGateway{
-		token:       cfg.Token,
-		apiBase:     fmt.Sprintf("https://api.telegram.org/bot%s", cfg.Token),
-		orch:        orch,
-		logger:      logger.With("component", "telegram-gateway"),
-		httpClient:  &http.Client{Timeout: time.Duration(pollTimeout+10) * time.Second},
-		chatRoles:   make(map[int64]string),
-		chatHistory: make(map[int64][]convTurn),
-		lastMsg:     make(map[int64]time.Time),
-		allowedChats: make(map[int64]bool),
-		activity:          NewActivityTracker(50),
-		pendingApprovals:  make(map[string]chan approvalResponse),
-		trustedChats:      make(map[int64]bool),
-		sessionWhitelist:  make(map[int64]map[string]bool),
+		token:            cfg.Token,
+		orch:             orch,
+		logger:           logger.With("component", "telegram-gateway"),
+		tg:               newTGClient(cfg.Token, &http.Client{Timeout: time.Duration(pollTimeout+10) * time.Second}, pollTimeout, logger.With("component", "telegram-api")),
+		allowedChats:     make(map[int64]bool),
+		activity:         NewActivityTracker(50),
+		pendingApprovals: make(map[string]chan approvalResponse),
+		store:            NewChatStore(),
 	}
 
 	// Parse allowed users
@@ -190,7 +142,7 @@ func (gw *TelegramGateway) Start(ctx context.Context) error {
 	gw.logger.Info("Telegram gateway starting", "has_token", gw.token != "")
 
 	// Verify bot token by calling getMe
-	botInfo, err := gw.getMe()
+	botInfo, err := gw.tg.getMe(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to verify bot token: %w", err)
 	}
@@ -208,7 +160,7 @@ func (gw *TelegramGateway) Start(ctx context.Context) error {
 		default:
 		}
 
-		updates, err := gw.getUpdates(ctx)
+		updates, err := gw.tg.getUpdates(ctx, gw.offset)
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil
@@ -237,7 +189,7 @@ func (gw *TelegramGateway) handleMessage(ctx context.Context, msg *tgMessage) {
 	text := strings.TrimSpace(msg.Text)
 
 	// Rate limit check
-	if !gw.checkRate(userID) {
+	if !gw.store.checkRate(userID) {
 		gw.logger.Warn("rate limited", "user_id", userID)
 		return
 	}
@@ -245,7 +197,7 @@ func (gw *TelegramGateway) handleMessage(ctx context.Context, msg *tgMessage) {
 	// Access control
 	if len(gw.allowedChats) > 0 && !gw.allowedChats[userID] {
 		gw.logger.Warn("unauthorized user", "user_id", userID, "username", msg.From.Username)
-		gw.sendMessage(chatID, "You are not authorized to use this bot.", msg.MessageID)
+		gw.tg.sendMessage(ctx, chatID, "You are not authorized to use this bot.", msg.MessageID)
 		return
 	}
 
@@ -262,10 +214,10 @@ func (gw *TelegramGateway) handleMessage(ctx context.Context, msg *tgMessage) {
 	}
 
 	// Determine role for this chat
-	role := gw.getChatRole(chatID)
+	role := gw.store.getChatRole(chatID)
 
 	// Build task with conversation context
-	taskWithCtx := gw.buildTaskWithContext(chatID, text)
+	taskWithCtx := gw.store.buildTaskWithContext(chatID, text)
 
 	// Send initial status message that we'll EDIT as progress comes in
 	roleEmoji := roleIconForRole(role)
@@ -273,18 +225,18 @@ func (gw *TelegramGateway) handleMessage(ctx context.Context, msg *tgMessage) {
 	if len(taskPreview) > 60 {
 		taskPreview = taskPreview[:60] + "..."
 	}
-	statusMsgID := gw.sendStatusMessage(chatID, fmt.Sprintf("🚀 %s %s — %q",
+	statusMsgID := gw.sendStatusMessage(ctx, chatID, fmt.Sprintf("🚀 %s %s — %q",
 		roleEmoji, role, taskPreview))
 
 	// Track progress state for editing
 	progressState := &progressTracker{
-		chatID:        chatID,
-		statusMsgID:   statusMsgID,
-		roleEmoji:     roleEmoji,
-		roleName:      role,
-		iteration:     0,
-		toolHistory:   []toolEntry{},
-		lastUpdateAt:  time.Now(),
+		chatID:       chatID,
+		statusMsgID:  statusMsgID,
+		roleEmoji:    roleEmoji,
+		roleName:     role,
+		iteration:    0,
+		toolHistory:  []toolEntry{},
+		lastUpdateAt: time.Now(),
 	}
 
 	// Send periodic "typing" indicators while task runs
@@ -293,18 +245,22 @@ func (gw *TelegramGateway) handleMessage(ctx context.Context, msg *tgMessage) {
 	go func() {
 		ticker := time.NewTicker(4 * time.Second)
 		defer ticker.Stop()
-		gw.sendChatAction(chatID, "typing")
+		gw.tg.sendChatAction(typingCtx, chatID, "typing")
 		for {
 			select {
 			case <-typingCtx.Done():
 				return
 			case <-ticker.C:
-				gw.sendChatAction(chatID, "typing")
+				gw.tg.sendChatAction(typingCtx, chatID, "typing")
 			}
 		}
 	}()
 
-	// Wire progress streaming — edit the status message with rich detail
+	// Wire progress streaming — edit the status message with rich detail.
+	// taskCtx is declared here (assigned below) so the progress closure can
+	// capture it by reference — it is only invoked during Execute, by which
+	// point taskCtx has been wired up.
+	var taskCtx context.Context
 	progressFn := func(ev agent.ProgressEvent) {
 		switch ev.Type {
 		case "think":
@@ -314,9 +270,9 @@ func (gw *TelegramGateway) handleMessage(ctx context.Context, msg *tgMessage) {
 			count := len(progressState.toolHistory)
 			progressState.mu.Unlock()
 			if count > 0 {
-				gw.updateProgressMessage(progressState, fmt.Sprintf("🤔 Thinking (iter %d) · %d tools done", ev.Iteration, count))
+				gw.updateProgressMessage(taskCtx, progressState, fmt.Sprintf("🤔 Thinking (iter %d) · %d tools done", ev.Iteration, count))
 			} else {
-				gw.updateProgressMessage(progressState, fmt.Sprintf("🤔 Thinking (iter %d)...", ev.Iteration))
+				gw.updateProgressMessage(taskCtx, progressState, fmt.Sprintf("🤔 Thinking (iter %d)...", ev.Iteration))
 			}
 
 		case "act":
@@ -334,7 +290,7 @@ func (gw *TelegramGateway) handleMessage(ctx context.Context, msg *tgMessage) {
 			} else {
 				msg = fmt.Sprintf("⏳ %s %s...", icon, ev.Tool)
 			}
-			gw.updateProgressMessage(progressState, msg)
+			gw.updateProgressMessage(taskCtx, progressState, msg)
 
 		case "observe":
 			// Record result and update progress
@@ -371,7 +327,7 @@ func (gw *TelegramGateway) handleMessage(ctx context.Context, msg *tgMessage) {
 				msg = fmt.Sprintf("%s %s · %d/%d ok",
 					statusIcon, toolIcon(ev.Tool), passed, count)
 			}
-			gw.updateProgressMessage(progressState, msg)
+			gw.updateProgressMessage(taskCtx, progressState, msg)
 
 		case "done":
 			// Task complete — show finishing message before deletion
@@ -379,17 +335,17 @@ func (gw *TelegramGateway) handleMessage(ctx context.Context, msg *tgMessage) {
 			count := len(progressState.toolHistory)
 			progressState.mu.Unlock()
 			if count > 0 {
-				gw.updateProgressMessage(progressState, fmt.Sprintf("📝 Finishing up... %d tools completed", count))
+				gw.updateProgressMessage(taskCtx, progressState, fmt.Sprintf("📝 Finishing up... %d tools completed", count))
 			}
 		}
 	}
 
-	taskCtx := agent.WithProgress(ctx, progressFn)
+	taskCtx = agent.WithProgress(ctx, progressFn)
 
 	// Wire approval system — severity-based, with session whitelist
 	approvalFn := func(toolName, argsJSON string) (bool, error) {
 		// Trust mode: auto-approve everything
-		if gw.trustedChats[chatID] {
+		if gw.store.isTrusted(chatID) {
 			return true, nil
 		}
 
@@ -401,13 +357,13 @@ func (gw *TelegramGateway) handleMessage(ctx context.Context, msg *tgMessage) {
 		}
 
 		// MEDIUM: check session whitelist first
-		if severity == "medium" && gw.isWhitelisted(chatID, toolName) {
+		if severity == "medium" && gw.store.isWhitelisted(chatID, toolName) {
 			return true, nil
 		}
 
 		// CRITICAL or un-whitelisted MEDIUM: ask the user
 		summary := summarizeToolForApproval(toolName, argsJSON)
-		return gw.requestApproval(chatID, toolName, summary, severity), nil
+		return gw.requestApproval(taskCtx, chatID, toolName, summary, severity), nil
 	}
 	taskCtx = agent.WithApproval(taskCtx, approvalFn)
 
@@ -434,7 +390,7 @@ func (gw *TelegramGateway) handleMessage(ctx context.Context, msg *tgMessage) {
 				count := len(progressState.toolHistory)
 				progressState.mu.Unlock()
 				if count > 0 {
-					gw.updateProgressMessage(progressState, fmt.Sprintf(
+					gw.updateProgressMessage(taskCtx, progressState, fmt.Sprintf(
 						"⏳ Still working... %d tools done · %s elapsed",
 						count, elapsed))
 				}
@@ -473,7 +429,7 @@ func (gw *TelegramGateway) handleMessage(ctx context.Context, msg *tgMessage) {
 				doneSummary = fmt.Sprintf("✅ Done! · %s", formatDuration(taskDuration))
 			}
 		}
-		gw.editMessageText(chatID, statusMsgID, fmt.Sprintf("%s %s · %s", roleEmoji, role, doneSummary))
+		gw.tg.editMessageText(ctx, chatID, statusMsgID, fmt.Sprintf("%s %s · %s", roleEmoji, role, doneSummary))
 	}
 
 	if err != nil {
@@ -491,17 +447,17 @@ func (gw *TelegramGateway) handleMessage(ctx context.Context, msg *tgMessage) {
 		}
 		// Check if it was a timeout
 		if taskCtx.Err() == context.DeadlineExceeded {
-			gw.sendMessageHTML(chatID,
+			gw.sendMessageHTML(ctx, chatID,
 				fmt.Sprintf("⏰ **Task timed out** after %s.\n\nThe task was too complex or the model was slow. Try breaking it into smaller steps.",
 					formatDuration(taskDuration)), msg.MessageID)
 			return
 		}
-		gw.sendMessageHTML(chatID, fmt.Sprintf("❌ **Task failed**\n\n`%s`\n\nThis may be a timeout or model error. Try rephrasing your request.", errSummary), msg.MessageID)
+		gw.sendMessageHTML(ctx, chatID, fmt.Sprintf("❌ **Task failed**\n\n`%s`\n\nThis may be a timeout or model error. Try rephrasing your request.", errSummary), msg.MessageID)
 		return
 	}
 
 	// Store conversation exchange for future context
-	gw.addHistory(chatID, text, result.Content)
+	gw.store.addHistory(chatID, text, result.Content)
 
 	// Build clean response — progress message already shows ✅ Done!
 	// so the result message just shows the content + footer
@@ -524,10 +480,11 @@ func (gw *TelegramGateway) handleMessage(ctx context.Context, msg *tgMessage) {
 	})
 
 	// Send response — split into chunks for Telegram's 4096 char limit
-	// Use HTML parse mode so bold/italic/code render natively
+	// Use HTML parse mode so bold/italic/code render natively.
+	// Use the handler ctx (not taskCtx, which typingCancel just canceled).
 	chunks := splitMessage(responseText, 4000)
 	for i, chunk := range chunks {
-		if err := gw.sendMessageHTML(chatID, chunk, msg.MessageID); err != nil {
+		if err := gw.sendMessageHTML(ctx, chatID, chunk, msg.MessageID); err != nil {
 			gw.logger.Error("failed to send message to Telegram",
 				"chat_id", chatID, "chunk", i, "error", err)
 		}
@@ -545,6 +502,12 @@ func (gw *TelegramGateway) handleMessage(ctx context.Context, msg *tgMessage) {
 
 // handleCommand processes bot commands.
 func (gw *TelegramGateway) handleCommand(ctx context.Context, chatID int64, msg *tgMessage) {
+	// reply is a thin wrapper over gw.tg.sendMessage so each case stays a
+	// one-liner; errors are logged (sendMessage already wraps them).
+	reply := func(text string) {
+		gw.tg.sendMessage(ctx, chatID, text, msg.MessageID)
+	}
+
 	text := strings.TrimSpace(msg.Text)
 	parts := strings.Fields(text)
 	cmd := parts[0]
@@ -552,49 +515,45 @@ func (gw *TelegramGateway) handleCommand(ctx context.Context, chatID int64, msg 
 
 	switch cmd {
 	case "/start":
-		gw.sendMessage(chatID,
-			"Kyoci Agent v5\n\n"+
-				"Your plug-and-play AI agent platform.\n\n"+
-				"Commands:\n"+
-				"/role [developer|sre|qa|pm|frontend] -- Switch role\n"+
-				"/activity -- Recent task activity\n"+
-				"/tools -- List available tools\n"+
-				"/roles -- List available roles\n"+
-				"/status -- System status\n"+
-				"/help -- Show help\n\n"+
-				"Just send any message and I'll process it!",
-			msg.MessageID)
+		reply("Kyoci Agent v5\n\n" +
+			"Your plug-and-play AI agent platform.\n\n" +
+			"Commands:\n" +
+			"/role [developer|sre|qa|pm|frontend] -- Switch role\n" +
+			"/activity -- Recent task activity\n" +
+			"/tools -- List available tools\n" +
+			"/roles -- List available roles\n" +
+			"/status -- System status\n" +
+			"/help -- Show help\n\n" +
+			"Just send any message and I'll process it!")
 
 	case "/help":
-		gw.sendMessage(chatID,
-			"Kyoci Agent v5 Help\n\n"+
-				"Commands:\n"+
-				"- /role developer -- Developer mode\n"+
-				"- /role sre -- SRE mode\n"+
-				"- /role qa -- QA mode\n"+
-				"- /role pm -- PM mode\n"+
-				"- /role frontend -- Frontend mode\n"+
-				"- /activity -- Show recent task activity\n"+
-				"- /tools -- List all tools\n"+
-				"- /roles -- List all roles\n"+
-				"- /status -- System status\n"+
-				"- /trust -- Toggle auto-approve all (skip ALL prompts)\n"+
-				"- /whitelist -- Show whitelisted tools this session\n"+
-				"- /clearwl -- Clear session whitelist\n"+
-				"- /reset -- Reset to auto-detect\n\n"+
-				"Usage:\n"+
-				"Just type your task and I'll handle it.\n"+
-				"Role auto-detects based on your message content.\n"+
-				"Every response shows what tools were used.",
-			msg.MessageID)
+		reply("Kyoci Agent v5 Help\n\n" +
+			"Commands:\n" +
+			"- /role developer -- Developer mode\n" +
+			"- /role sre -- SRE mode\n" +
+			"- /role qa -- QA mode\n" +
+			"- /role pm -- PM mode\n" +
+			"- /role frontend -- Frontend mode\n" +
+			"- /activity -- Show recent task activity\n" +
+			"- /tools -- List all tools\n" +
+			"- /roles -- List all roles\n" +
+			"- /status -- System status\n" +
+			"- /trust -- Toggle auto-approve all (skip ALL prompts)\n" +
+			"- /whitelist -- Show whitelisted tools this session\n" +
+			"- /clearwl -- Clear session whitelist\n" +
+			"- /reset -- Reset to auto-detect\n\n" +
+			"Usage:\n" +
+			"Just type your task and I'll handle it.\n" +
+			"Role auto-detects based on your message content.\n" +
+			"Every response shows what tools were used.")
 
 	case "/role":
 		if len(args) == 0 {
-			current := gw.getChatRole(chatID)
+			current := gw.store.getChatRole(chatID)
 			if current == "" {
 				current = "auto-detect"
 			}
-			gw.sendMessage(chatID, fmt.Sprintf("Current role: %s\n\nUse /role [developer|sre|qa|pm|frontend] to switch.", current), msg.MessageID)
+			reply(fmt.Sprintf("Current role: %s\n\nUse /role [developer|sre|qa|pm|frontend] to switch.", current))
 			return
 		}
 		role := strings.ToLower(args[0])
@@ -607,24 +566,23 @@ func (gw *TelegramGateway) handleCommand(ctx context.Context, chatID int64, msg 
 			"auto": "", "reset": "",
 		}
 		if mapped, ok := validRoles[role]; ok {
-			gw.setChatRole(chatID, mapped)
+			gw.store.setChatRole(chatID, mapped)
 			if mapped == "" {
-				gw.sendMessage(chatID, "Role reset to auto-detect", msg.MessageID)
+				reply("Role reset to auto-detect")
 			} else {
-				gw.sendMessage(chatID, fmt.Sprintf("Role set to %s", mapped), msg.MessageID)
+				reply(fmt.Sprintf("Role set to %s", mapped))
 			}
 		} else {
-			gw.sendMessage(chatID, "Invalid role. Use: developer, sre, qa, pm, frontend", msg.MessageID)
+			reply("Invalid role. Use: developer, sre, qa, pm, frontend")
 		}
 
 	case "/reset":
-		gw.setChatRole(chatID, "")
-		gw.clearHistory(chatID)
-		gw.sendMessage(chatID, "Role reset to auto-detect. Conversation history cleared.", msg.MessageID)
+		gw.store.setChatRole(chatID, "")
+		gw.store.clearHistory(chatID)
+		reply("Role reset to auto-detect. Conversation history cleared.")
 
 	case "/activity":
-		actMsg := gw.activity.FormatRecent(10)
-		gw.sendMessage(chatID, actMsg, msg.MessageID)
+		reply(gw.activity.FormatRecent(10))
 
 	case "/tools":
 		_, _, toolCount, _ := gw.orch.Status()
@@ -647,7 +605,7 @@ func (gw *TelegramGateway) handleCommand(ctx context.Context, chatID int64, msg 
 		for _, t := range toolNames {
 			toolsMsg += "- " + t + "\n"
 		}
-		gw.sendMessage(chatID, toolsMsg, msg.MessageID)
+		reply(toolsMsg)
 
 	case "/roles":
 		_, roleCount, _, _ := gw.orch.Status()
@@ -670,7 +628,7 @@ func (gw *TelegramGateway) handleCommand(ctx context.Context, chatID int64, msg 
 			rolesMsg += fmt.Sprintf("%s %s -- %s\n", emoji, r.name, r.desc)
 		}
 		rolesMsg += "\nRole auto-detects from your message.\nUse /role <name> to force a role."
-		gw.sendMessage(chatID, rolesMsg, msg.MessageID)
+		reply(rolesMsg)
 
 	case "/status":
 		providers, roles, tools, skills := gw.orch.Status()
@@ -692,315 +650,36 @@ func (gw *TelegramGateway) handleCommand(ctx context.Context, chatID int64, msg 
 			roles, tools, skills,
 			total, float64(success)/float64(max(1, total))*100,
 			formatDuration(avgDur), totalTools)
-		gw.sendMessage(chatID, statusMsg, msg.MessageID)
+		reply(statusMsg)
 
 	case "/trust":
-		if gw.trustedChats[chatID] {
-			delete(gw.trustedChats, chatID)
-			gw.sendMessage(chatID, "🔒 Trust mode OFF. Severity-based approvals active.", msg.MessageID)
+		if gw.store.isTrusted(chatID) {
+			gw.store.setTrusted(chatID, false)
+			reply("🔒 Trust mode OFF. Severity-based approvals active.")
 		} else {
-			gw.trustedChats[chatID] = true
-			gw.sendMessage(chatID, "🔓 Trust mode ON. All tools auto-approved. Use /trust again to disable.", msg.MessageID)
+			gw.store.setTrusted(chatID, true)
+			reply("🔓 Trust mode ON. All tools auto-approved. Use /trust again to disable.")
 		}
 
 	case "/whitelist":
-		gw.whitelistMu.Lock()
-		wl := gw.sessionWhitelist[chatID]
-		gw.whitelistMu.Unlock()
-		if len(wl) == 0 {
-			gw.sendMessage(chatID, "📋 No tools whitelisted this session.\n\nWhen you click ✅✅ on a 🟡 MEDIUM approval, that tool gets whitelisted — no more prompts for it until restart.", msg.MessageID)
+		tools := gw.store.whitelistedTools(chatID)
+		if len(tools) == 0 {
+			reply("📋 No tools whitelisted this session.\n\nWhen you click ✅✅ on a 🟡 MEDIUM approval, that tool gets whitelisted — no more prompts for it until restart.")
 		} else {
-			var tools []string
-			for t := range wl {
-				tools = append(tools, "• "+t)
+			for i, t := range tools {
+				tools[i] = "• " + t
 			}
 			sort.Strings(tools)
-			gw.sendMessage(chatID, fmt.Sprintf("📋 <b>Whitelisted tools this session:</b>\n%s\n\nThese tools auto-approve without asking. /clearwl to clear.", strings.Join(tools, "\n")), msg.MessageID)
+			reply(fmt.Sprintf("📋 <b>Whitelisted tools this session:</b>\n%s\n\nThese tools auto-approve without asking. /clearwl to clear.", strings.Join(tools, "\n")))
 		}
 
 	case "/clearwl":
-		gw.whitelistMu.Lock()
-		gw.sessionWhitelist[chatID] = make(map[string]bool)
-		gw.whitelistMu.Unlock()
-		gw.sendMessage(chatID, "🔄 Session whitelist cleared. All tools will ask for approval again.", msg.MessageID)
+		gw.store.clearWhitelist(chatID)
+		reply("🔄 Session whitelist cleared. All tools will ask for approval again.")
 
 	default:
-		gw.sendMessage(chatID, "Unknown command. Use /help to see available commands.", msg.MessageID)
+		reply("Unknown command. Use /help to see available commands.")
 	}
-}
-
-// ── Telegram Bot API Calls ─────────────────────────────────────
-
-// getMe verifies the bot token and returns bot info.
-func (gw *TelegramGateway) getMe() (*tgUser, error) {
-	resp, err := gw.apiCall("getMe", nil)
-	if err != nil {
-		return nil, err
-	}
-	var user tgUser
-	if err := json.Unmarshal(resp, &user); err != nil {
-		return nil, fmt.Errorf("failed to parse getMe response: %w", err)
-	}
-	return &user, nil
-}
-
-// getUpdates fetches pending updates via long-polling.
-func (gw *TelegramGateway) getUpdates(ctx context.Context) ([]tgUpdate, error) {
-	params := map[string]string{
-		"timeout": "30",
-	}
-	if gw.offset > 0 {
-		params["offset"] = strconv.FormatInt(gw.offset, 10)
-	}
-
-	resp, err := gw.apiCallWithCtx(ctx, "getUpdates", params)
-	if err != nil {
-		return nil, err
-	}
-
-	var updates []tgUpdate
-	if err := json.Unmarshal(resp, &updates); err != nil {
-		return nil, fmt.Errorf("failed to parse updates: %w", err)
-	}
-	return updates, nil
-}
-
-// sendMessage sends a text message to a chat.
-func (gw *TelegramGateway) sendMessage(chatID int64, text string, replyTo int64) error {
-	req := tgSendMessageRequest{
-		ChatID:    chatID,
-		Text:      text,
-		ParseMode: "", // Empty = plain text, avoids Markdown parse failures
-		ReplyTo:   replyTo,
-	}
-
-	body, err := json.Marshal(req)
-	if err != nil {
-		return fmt.Errorf("failed to marshal message: %w", err)
-	}
-
-	apiURL := fmt.Sprintf("%s/sendMessage", gw.apiBase)
-	httpReq, err := http.NewRequest("POST", apiURL, bytes.NewReader(body))
-	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	resp, err := gw.httpClient.Do(httpReq)
-	if err != nil {
-		return fmt.Errorf("failed to send message: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return fmt.Errorf("sendMessage failed (status %d): %s", resp.StatusCode, string(respBody))
-	}
-
-	return nil
-}
-
-// sendChatAction sends a typing indicator.
-func (gw *TelegramGateway) sendChatAction(chatID int64, action string) error {
-	params := map[string]string{
-		"chat_id": strconv.FormatInt(chatID, 10),
-		"action":  action,
-	}
-	_, err := gw.apiCall("sendChatAction", params)
-	return err
-}
-
-// apiCall makes a GET request to the Telegram Bot API.
-func (gw *TelegramGateway) apiCall(method string, params map[string]string) (json.RawMessage, error) {
-	return gw.apiCallWithCtx(context.Background(), method, params)
-}
-
-// apiCallWithCtx makes a GET request to the Telegram Bot API with context.
-func (gw *TelegramGateway) apiCallWithCtx(ctx context.Context, method string, params map[string]string) (json.RawMessage, error) {
-	apiURL := fmt.Sprintf("%s/%s", gw.apiBase, method)
-	if len(params) > 0 {
-		values := url.Values{}
-		for k, v := range params {
-			values.Set(k, v)
-		}
-		apiURL += "?" + values.Encode()
-	}
-
-	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	resp, err := gw.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("API call %s failed: %w", method, err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20)) // 1MB limit
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("API %s returned status %d: %s", method, resp.StatusCode, string(body))
-	}
-
-	var apiResp tgAPIResponse
-	if err := json.Unmarshal(body, &apiResp); err != nil {
-		return nil, fmt.Errorf("failed to parse API response: %w", err)
-	}
-
-	if !apiResp.OK {
-		return nil, fmt.Errorf("API %s error: %s", method, apiResp.Description)
-	}
-
-	return apiResp.Result, nil
-}
-
-// uploadFile uploads a file to Telegram (for future use).
-func (gw *TelegramGateway) uploadFile(method string, fieldName string, fileName string, fileData []byte, params map[string]string) (json.RawMessage, error) {
-	var buf bytes.Buffer
-	writer := multipart.NewWriter(&buf)
-
-	part, err := writer.CreateFormFile(fieldName, fileName)
-	if err != nil {
-		return nil, err
-	}
-	if _, err := part.Write(fileData); err != nil {
-		return nil, err
-	}
-
-	for k, v := range params {
-		writer.WriteField(k, v)
-	}
-	writer.Close()
-
-	apiURL := fmt.Sprintf("%s/%s", gw.apiBase, method)
-	req, err := http.NewRequest("POST", apiURL, &buf)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", writer.FormDataContentType())
-
-	resp, err := gw.httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return nil, err
-	}
-
-	var apiResp tgAPIResponse
-	if err := json.Unmarshal(body, &apiResp); err != nil {
-		return nil, err
-	}
-
-	if !apiResp.OK {
-		return nil, fmt.Errorf("API %s error: %s", method, apiResp.Description)
-	}
-
-	return apiResp.Result, nil
-}
-
-// ── Chat State Management ──────────────────────────────────────
-
-// maxHistoryTurns is how many previous exchanges to include as context.
-const maxHistoryTurns = 4
-
-func (gw *TelegramGateway) getChatRole(chatID int64) string {
-	gw.chatMu.RLock()
-	defer gw.chatMu.RUnlock()
-	return gw.chatRoles[chatID]
-}
-
-func (gw *TelegramGateway) setChatRole(chatID int64, role string) {
-	gw.chatMu.Lock()
-	defer gw.chatMu.Unlock()
-	gw.chatRoles[chatID] = role
-}
-
-// addHistory stores a user-assistant exchange and prunes old entries.
-func (gw *TelegramGateway) addHistory(chatID int64, user, assistant string) {
-	// Truncate assistant response to keep context manageable
-	if len(assistant) > 500 {
-		assistant = assistant[:500] + "..."
-	}
-
-	gw.chatMu.Lock()
-	defer gw.chatMu.Unlock()
-
-	gw.chatHistory[chatID] = append(gw.chatHistory[chatID], convTurn{
-		user:      user,
-		assistant: assistant,
-	})
-
-	// Keep only last maxHistoryTurns exchanges
-	if len(gw.chatHistory[chatID]) > maxHistoryTurns {
-		gw.chatHistory[chatID] = gw.chatHistory[chatID][len(gw.chatHistory[chatID])-maxHistoryTurns:]
-	}
-}
-
-// clearHistory removes all conversation history for a chat.
-func (gw *TelegramGateway) clearHistory(chatID int64) {
-	gw.chatMu.Lock()
-	defer gw.chatMu.Unlock()
-	delete(gw.chatHistory, chatID)
-}
-
-// buildTaskWithContext prepends recent conversation history to the current task
-// so the LLM can understand follow-up messages like "all of it" or "yes, do that".
-func (gw *TelegramGateway) buildTaskWithContext(chatID int64, currentMessage string) string {
-	gw.chatMu.RLock()
-	history := gw.chatHistory[chatID]
-	gw.chatMu.RUnlock()
-
-	if len(history) == 0 {
-		return currentMessage
-	}
-
-	// Keep only last 3 exchanges to avoid context bloat
-	start := 0
-	if len(history) > 3 {
-		start = len(history) - 3
-	}
-	recent := history[start:]
-
-	var sb strings.Builder
-	sb.WriteString("[Previous conversation — these tasks are ALREADY COMPLETED. Do NOT redo them.]\n\n")
-	for _, turn := range recent {
-		sb.WriteString("User: ")
-		sb.WriteString(turn.user)
-		sb.WriteString("\n")
-		// Truncate assistant response to key info
-		assistantSummary := turn.assistant
-		if len(assistantSummary) > 500 {
-			assistantSummary = assistantSummary[:500] + "... [truncated]"
-		}
-		sb.WriteString("Assistant (DONE): ")
-		sb.WriteString(assistantSummary)
-		sb.WriteString("\n\n")
-	}
-	sb.WriteString("[End of previous context — above tasks are COMPLETE]\n\n")
-	sb.WriteString("Current message: ")
-	sb.WriteString(currentMessage)
-
-	return sb.String()
-}
-
-func (gw *TelegramGateway) checkRate(userID int64) bool {
-	gw.rateMu.Lock()
-	defer gw.rateMu.Unlock()
-
-	last, exists := gw.lastMsg[userID]
-	if exists && time.Since(last) < 2*time.Second {
-		return false
-	}
-	gw.lastMsg[userID] = time.Now()
-	return true
 }
 
 // ── Rich Progress System ───────────────────────────────────────
@@ -1142,9 +821,18 @@ func toolIcon(tool string) string {
 	return "🔧"
 }
 
+// ============================================================
+// Gateway-level helpers (Bot API wrappers + approval flow)
+// ============================================================
+//
+// These sit above the tgClient SDK: they translate gateway concerns
+// (markdown→HTML, throttled progress edits, inline-keyboard approvals) into
+// the raw Bot API calls exposed by gw.tg. Stateful per-chat decisions route
+// through gw.store.
+
 // sendStatusMessage sends the initial status message and returns its message ID.
-func (gw *TelegramGateway) sendStatusMessage(chatID int64, text string) int64 {
-	msgID, err := gw.sendMessageWithID(chatID, text, 0)
+func (gw *TelegramGateway) sendStatusMessage(ctx context.Context, chatID int64, text string) int64 {
+	msgID, err := gw.tg.sendMessageWithID(ctx, chatID, text, 0)
 	if err != nil {
 		gw.logger.Error("failed to send status message", "error", err)
 		return 0
@@ -1155,7 +843,7 @@ func (gw *TelegramGateway) sendStatusMessage(chatID int64, text string) int64 {
 // updateProgressMessage edits the status message with new text.
 // Throttled to max 1 edit per 1.2 seconds to avoid Telegram rate limits.
 // Every message is automatically prefixed with the agent identity.
-func (gw *TelegramGateway) updateProgressMessage(pt *progressTracker, newMsg string) {
+func (gw *TelegramGateway) updateProgressMessage(ctx context.Context, pt *progressTracker, newMsg string) {
 	pt.mu.Lock()
 	// Throttle: don't edit more than once per 1.2s
 	if time.Since(pt.lastUpdateAt) < 1200*time.Millisecond {
@@ -1177,254 +865,14 @@ func (gw *TelegramGateway) updateProgressMessage(pt *progressTracker, newMsg str
 		fullText = fullText[:800]
 	}
 
-	gw.editMessageText(chatID, msgID, fullText)
-}
-// sendMessageWithID sends a message and returns the message ID.
-func (gw *TelegramGateway) sendMessageWithID(chatID int64, text string, replyTo int64) (int64, error) {
-	req := tgSendMessageRequest{
-		ChatID:  chatID,
-		Text:    text,
-		ReplyTo: replyTo,
-	}
-
-	body, err := json.Marshal(req)
-	if err != nil {
-		return 0, fmt.Errorf("failed to marshal message: %w", err)
-	}
-
-	apiURL := fmt.Sprintf("%s/sendMessage", gw.apiBase)
-	httpReq, err := http.NewRequest("POST", apiURL, bytes.NewReader(body))
-	if err != nil {
-		return 0, err
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	resp, err := gw.httpClient.Do(httpReq)
-	if err != nil {
-		return 0, err
-	}
-	defer resp.Body.Close()
-
-	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if resp.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("sendMessage failed (status %d): %s", resp.StatusCode, string(respBody))
-	}
-
-	// Parse message ID from response
-	var apiResp struct {
-		OK     bool `json:"ok"`
-		Result struct {
-			MessageID int64 `json:"message_id"`
-		} `json:"result"`
-	}
-	if err := json.Unmarshal(respBody, &apiResp); err != nil {
-		return 0, err
-	}
-	return apiResp.Result.MessageID, nil
+	gw.tg.editMessageText(ctx, chatID, msgID, fullText)
 }
 
-// editMessageText edits an existing message's text.
-func (gw *TelegramGateway) editMessageText(chatID int64, messageID int64, text string) error {
-	params := map[string]string{
-		"chat_id":    strconv.FormatInt(chatID, 10),
-		"message_id": strconv.FormatInt(messageID, 10),
-		"text":       text,
-	}
-	_, err := gw.apiCall("editMessageText", params)
-	if err != nil {
-		// "message is not modified" is harmless — just means same content
-		if strings.Contains(err.Error(), "not modified") {
-			return nil
-		}
-		gw.logger.Debug("editMessageText failed", "error", err)
-	}
-	return err
-}
+// ── Approval flow ───────────────────────────────────────────────
 
-// deleteMessage deletes a message by ID.
-func (gw *TelegramGateway) deleteMessage(chatID int64, messageID int64) error {
-	params := map[string]string{
-		"chat_id":    strconv.FormatInt(chatID, 10),
-		"message_id": strconv.FormatInt(messageID, 10),
-	}
-	_, err := gw.apiCall("deleteMessage", params)
-	return err
-}
-
-// truncateForTG truncates text for Telegram display.
-func truncateForTG(s string, maxLen int) string {
-	s = strings.TrimSpace(s)
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen] + "..."
-}
-
-// splitMessage splits a long message into chunks that fit within Telegram's
-// 4096 character limit. Splits on newline boundaries when possible.
-func splitMessage(text string, maxLen int) []string {
-	if len(text) <= maxLen {
-		return []string{text}
-	}
-
-	var chunks []string
-	for len(text) > 0 {
-		if len(text) <= maxLen {
-			chunks = append(chunks, text)
-			break
-		}
-
-		// Try to split at a newline near the limit
-		splitAt := maxLen
-		for i := maxLen; i > maxLen/2; i-- {
-			if i < len(text) && text[i] == '\n' {
-				splitAt = i + 1
-				break
-			}
-		}
-
-		chunks = append(chunks, text[:splitAt])
-		text = text[splitAt:]
-	}
-
-	return chunks
-}
-
-// ============================================================
-// APPROVAL SYSTEM
-// ============================================================
-
-// assessSeverity returns the risk level of a tool call.
-// "low" = auto-approve silently
-// "medium" = ask once, then whitelist for session
-// "critical" = always ask, never whitelisted
-func assessSeverity(toolName, argsJSON string) string {
-	switch toolName {
-	case "terminal":
-		args := kyociParseArgs(argsJSON)
-		cmd, _ := args["command"].((string))
-		return assessCommandSeverity(cmd)
-	case "file":
-		args := kyociParseArgs(argsJSON)
-		action, _ := args["action"].(string)
-		switch action {
-		case "read", "list", "search":
-			return "low"
-		case "write", "mkdir":
-			return "medium"
-		case "delete":
-			return "critical"
-		default:
-			return "medium"
-		}
-	case "security_scan":
-		return "low"
-	case "delegation":
-		return "medium"
-	default:
-		return "low"
-	}
-}
-
-// assessCommandSeverity classifies a terminal command by risk.
-func assessCommandSeverity(cmd string) string {
-	cmd = strings.TrimSpace(cmd)
-	if cmd == "" {
-		return "low"
-	}
-	lower := strings.ToLower(cmd)
-
-	// ── CRITICAL: always ask, never whitelisted ──
-	criticalPatterns := []string{
-		"rm -rf", "rm -fr", "rmdir",
-		"kill -9", "killall", "pkill",
-		"shutdown", "reboot", "halt",
-		"mkfs", "dd if=", "> /dev/sd",
-		"chmod 777", "chown -R",
-		"git push --force", "git push -f ", "git reset --hard",
-		"git clean -fd",
-		"docker rm", "docker rmi", "docker system prune",
-		"docker volume rm", "docker network rm",
-		"kubectl delete", "kubectl drain",
-		"sudo ",
-		"drop table", "drop database", "truncate ",
-		"shred ",
-		"iptables -F", "ufw disable",
-		"systemctl stop", "systemctl disable",
-		"launchctl unload",
-	}
-	for _, p := range criticalPatterns {
-		if strings.Contains(lower, p) {
-			return "critical"
-		}
-	}
-
-	// ── LOW: safe dev/ops commands — auto-approve ──
-	base := strings.Fields(cmd)
-	if len(base) == 0 {
-		return "low"
-	}
-	baseCmd := base[0]
-	if idx := strings.LastIndex(baseCmd, "/"); idx >= 0 {
-		baseCmd = baseCmd[idx+1:]
-	}
-
-	safeCommands := map[string]bool{
-		// read-only inspection
-		"ls": true, "cat": true, "head": true, "tail": true, "less": true,
-		"pwd": true, "echo": true, "whoami": true, "id": true,
-		"date": true, "uptime": true, "uname": true, "hostname": true,
-		"df": true, "du": true, "free": true, "vm_stat": true,
-		"ps": true, "top": true, "htop": true,
-		"grep": true, "rg": true, "find": true, "fd": true,
-		"wc": true, "sort": true, "uniq": true, "cut": true, "tr": true,
-		"diff": true, "file": true, "stat": true, "touch": true,
-		// dev tooling — safe to run
-		"git": true, "npm": true, "npx": true, "node": true, "python3": true,
-		"python": true, "pip": true, "uv": true, "go": true, "cargo": true,
-		"rustc": true, "java": true, "mvn": true, "gradle": true,
-		"make": true, "cmake": true,
-		// docker — safe read/inspect/build
-		"docker": true, "docker-compose": true,
-		// network inspection
-		"curl": true, "wget": true, "ping": true, "dig": true, "nslookup": true,
-		"netstat": true, "ss": true, "lsof": true, "ifconfig": true,
-		// system info
-		"which": true, "whereis": true, "type": true,
-		"env": true, "printenv": true,
-		"mdfind": true, "mdls": true,
-		"sw_vers": true, "sysctl": true,
-		// text tools
-		"sed": true, "awk": true, "jq": true, "yq": true,
-		"tee": true, "xargs": true,
-		"tar": true, "unzip": true, "gzip": true,
-	}
-	if safeCommands[baseCmd] {
-		// Even safe base commands can be dangerous with certain flags
-		if baseCmd == "git" && (strings.Contains(lower, "push --force") || strings.Contains(lower, "reset --hard")) {
-			return "critical" // already caught above, but double-check
-		}
-		if baseCmd == "docker" && (strings.Contains(lower, "rm ") || strings.Contains(lower, "rmi ") || strings.Contains(lower, "prune")) {
-			return "critical"
-		}
-		if baseCmd == "curl" && (strings.Contains(lower, "-x post") || strings.Contains(lower, "-x put") || strings.Contains(lower, "-x delete") || strings.Contains(lower, "--request post") || strings.Contains(lower, "--request delete")) {
-			return "medium" // API mutations need one-time approval
-		}
-		return "low"
-	}
-
-	// ── MEDIUM: unknown commands — ask once ──
-	return "medium"
-}
-
-// isSafeCommand is kept for backward compat (isRiskyTool replacement).
-func isSafeCommand(cmd string) bool {
-	return assessCommandSeverity(cmd) == "low"
-}
-
-// requestApproval sends an inline keyboard to the user and blocks until they respond.
-// Returns approvalResponse with the user's decision.
-func (gw *TelegramGateway) requestApproval(chatID int64, toolName, summary, severity string) bool {
+// requestApproval sends an inline keyboard to the user and blocks until they
+// respond. Returns the user's approve/deny decision.
+func (gw *TelegramGateway) requestApproval(ctx context.Context, chatID int64, toolName, summary, severity string) bool {
 	gw.approvalMu.Lock()
 	approvalID := fmt.Sprintf("appr_%d_%d", chatID, time.Now().UnixNano())
 	ch := make(chan approvalResponse, 1)
@@ -1480,8 +928,7 @@ func (gw *TelegramGateway) requestApproval(chatID int64, toolName, summary, seve
 	}
 	params["reply_markup"] = keyboard
 
-	_, err := gw.apiCall("sendMessage", params)
-	if err != nil {
+	if _, err := gw.tg.apiCall(ctx, "sendMessage", params); err != nil {
 		gw.logger.Error("failed to send approval message", "error", err)
 		return true // Fail open
 	}
@@ -1491,26 +938,14 @@ func (gw *TelegramGateway) requestApproval(chatID int64, toolName, summary, seve
 	select {
 	case resp := <-ch:
 		if resp.whitelist && resp.approved {
-			gw.whitelistMu.Lock()
-			if gw.sessionWhitelist[chatID] == nil {
-				gw.sessionWhitelist[chatID] = make(map[string]bool)
-			}
-			gw.sessionWhitelist[chatID][toolName] = true
-			gw.whitelistMu.Unlock()
+			gw.store.whitelistTool(chatID, toolName)
 			gw.logger.Info("tool whitelisted for session", "tool", toolName, "chat_id", chatID)
 		}
 		return resp.approved
 	case <-time.After(120 * time.Second):
-		gw.sendMessage(chatID, "⏰ Approval timed out (120s). Tool skipped.", 0)
+		gw.tg.sendMessage(ctx, chatID, "⏰ Approval timed out (120s). Tool skipped.", 0)
 		return false
 	}
-}
-
-// isWhitelisted checks if a tool has been session-whitelisted for a chat.
-func (gw *TelegramGateway) isWhitelisted(chatID int64, toolName string) bool {
-	gw.whitelistMu.Lock()
-	defer gw.whitelistMu.Unlock()
-	return gw.sessionWhitelist[chatID] != nil && gw.sessionWhitelist[chatID][toolName]
 }
 
 // handleCallbackQuery processes inline keyboard button presses.
@@ -1520,7 +955,7 @@ func (gw *TelegramGateway) handleCallbackQuery(ctx context.Context, cq *tgCallba
 	}
 
 	// Answer the callback query first (removes loading state on button)
-	gw.answerCallbackQuery(cq.ID, "")
+	gw.tg.answerCallbackQuery(ctx, cq.ID, "")
 
 	// Parse callback data: "appr_<chatID>_<nano>:yes" / ":no" / ":whitelist" / ":trust"
 	parts := strings.SplitN(cq.Data, ":", 2)
@@ -1552,7 +987,7 @@ func (gw *TelegramGateway) handleCallbackQuery(ctx context.Context, cq *tgCallba
 		resp.approved = true
 		// Enable trust mode for this chat
 		if cq.Message != nil {
-			gw.trustedChats[cq.Message.Chat.ID] = true
+			gw.store.setTrusted(cq.Message.Chat.ID, true)
 		}
 	default:
 		resp.approved = false
@@ -1579,7 +1014,7 @@ func (gw *TelegramGateway) handleCallbackQuery(ctx context.Context, cq *tgCallba
 			"text":       statusText,
 			"parse_mode": "HTML",
 		}
-		gw.apiCall("editMessageText", params)
+		gw.tg.apiCall(ctx, "editMessageText", params)
 	}
 
 	// Send result to the waiting goroutine
@@ -1591,19 +1026,32 @@ func (gw *TelegramGateway) handleCallbackQuery(ctx context.Context, cq *tgCallba
 	gw.logger.Info("approval response", "approval_id", approvalID, "action", action, "approved", resp.approved, "whitelist", resp.whitelist)
 }
 
-// answerCallbackQuery answers a callback query (removes loading spinner on button).
-func (gw *TelegramGateway) answerCallbackQuery(callbackID, text string) {
-	params := map[string]string{
-		"callback_query_id": callbackID,
+// sendMessageHTML sends a message using HTML parse mode.
+func (gw *TelegramGateway) sendMessageHTML(ctx context.Context, chatID int64, text string, replyTo int64) error {
+	// Convert markdown to HTML
+	htmlText := markdownToHTML(text)
+
+	chunks := splitMessage(htmlText, 4000)
+	for _, chunk := range chunks {
+		params := map[string]string{
+			"chat_id":    strconv.FormatInt(chatID, 10),
+			"text":       chunk,
+			"parse_mode": "HTML",
+		}
+		if replyTo > 0 {
+			params["reply_to_message_id"] = strconv.FormatInt(replyTo, 10)
+		}
+		if _, err := gw.tg.apiCall(ctx, "sendMessage", params); err != nil {
+			// Fallback: send plain text without HTML if parsing fails
+			gw.logger.Warn("HTML sendMessage failed, falling back to plain text", "error", err)
+			plainChunks := splitMessage(text, 4000)
+			for _, pc := range plainChunks {
+				gw.tg.sendMessage(ctx, chatID, pc, replyTo)
+			}
+			return nil
+		}
 	}
-	if text != "" {
-		params["text"] = text
-		params["show_alert"] = "false"
-	}
-	_, err := gw.apiCall("answerCallbackQuery", params)
-	if err != nil {
-		gw.logger.Debug("answerCallbackQuery failed", "error", err)
-	}
+	return nil
 }
 
 // kyociParseArgs is a local helper to parse JSON args (avoids import cycle).
@@ -1640,121 +1088,4 @@ func summarizeToolForApproval(toolName, argsJSON string) string {
 		}
 	}
 	return toolName
-}
-
-// ============================================================
-// MARKDOWN → HTML CONVERSION FOR TELEGRAM
-// ============================================================
-
-// htmlEscape escapes special HTML characters for Telegram's HTML parse mode.
-func htmlEscape(s string) string {
-	s = strings.ReplaceAll(s, "&", "&amp;")
-	s = strings.ReplaceAll(s, "<", "&lt;")
-	s = strings.ReplaceAll(s, ">", "&gt;")
-	return s
-}
-
-// markdownToHTML converts markdown text to Telegram HTML format.
-// Supports: **bold**, *italic*, ~~strike~~, __underline__, `code`, ```code blocks```,
-// > quotes, # headings, - bullet lists, [links](url).
-// First escapes HTML chars, then applies markdown replacements.
-func markdownToHTML(input string) string {
-	// Escape HTML entities first
-	s := htmlEscape(input)
-
-	// Code blocks ```...```
-	codeBlockRe := regexp.MustCompile("(?s)```\\w*\\n?(.*?)```")
-	s = codeBlockRe.ReplaceAllStringFunc(s, func(m string) string {
-		sub := codeBlockRe.FindStringSubmatch(m)
-		if len(sub) < 2 {
-			return m
-		}
-		return "<pre><code>" + strings.TrimSpace(sub[1]) + "</code></pre>"
-	})
-
-	// Inline code `...`
-	inlineCodeRe := regexp.MustCompile("`([^`]+)`")
-	s = inlineCodeRe.ReplaceAllString(s, "<code>$1</code>")
-
-	// Bold **text**
-	boldRe := regexp.MustCompile(`\*\*(.+?)\*\*`)
-	s = boldRe.ReplaceAllString(s, "<b>$1</b>")
-
-	// Bold __text__ (alternative)
-	boldUnderRe := regexp.MustCompile(`__(.+?)__`)
-	s = boldUnderRe.ReplaceAllString(s, "<b>$1</b>")
-
-	// Italic *text* (but not inside bold)
-	italicRe := regexp.MustCompile(`\*(.+?)\*`)
-	s = italicRe.ReplaceAllString(s, "<i>$1</i>")
-
-	// Italic _text_ (but not word_parts)
-	italicUnderRe := regexp.MustCompile(`(^|\s)_([^_]+?)_(\s|$)`)
-	s = italicUnderRe.ReplaceAllString(s, "$1<i>$2</i>$3")
-
-	// Strikethrough ~~text~~
-	strikeRe := regexp.MustCompile(`~~(.+?)~~`)
-	s = strikeRe.ReplaceAllString(s, "<s>$1</s>")
-
-	// Spoiler ||text||
-	spoilerRe := regexp.MustCompile(`\|\|(.+?)\|\|`)
-	s = spoilerRe.ReplaceAllString(s, "<tg-spoiler>$1</tg-spoiler>")
-
-	// Links [text](url)
-	linkRe := regexp.MustCompile(`\[([^\]]+)\]\(([^)]+)\)`)
-	s = linkRe.ReplaceAllString(s, `<a href="$2">$1</a>`)
-
-	// Headings: # → bold
-	headingRe := regexp.MustCompile(`(?m)^(#{1,3})\s+(.+)$`)
-	s = headingRe.ReplaceAllStringFunc(s, func(m string) string {
-		sub := headingRe.FindStringSubmatch(m)
-		if len(sub) < 3 {
-			return m
-		}
-		return "\n<b>" + sub[2] + "</b>"
-	})
-
-	// Block quotes > text
-	quoteRe := regexp.MustCompile(`(?m)^&gt;\s*(.+)$`)
-	s = quoteRe.ReplaceAllStringFunc(s, func(m string) string {
-		sub := quoteRe.FindStringSubmatch(m)
-		if len(sub) < 2 {
-			return m
-		}
-		return "<blockquote>" + sub[1] + "</blockquote>"
-	})
-
-	// Clean up: collapse multiple newlines
-	s = regexp.MustCompile(`\n{4,}`).ReplaceAllString(s, "\n\n\n")
-
-	return s
-}
-
-// sendMessageHTML sends a message using HTML parse mode.
-func (gw *TelegramGateway) sendMessageHTML(chatID int64, text string, replyTo int64) error {
-	// Convert markdown to HTML
-	htmlText := markdownToHTML(text)
-
-	chunks := splitMessage(htmlText, 4000)
-	for _, chunk := range chunks {
-		params := map[string]string{
-			"chat_id":    strconv.FormatInt(chatID, 10),
-			"text":       chunk,
-			"parse_mode": "HTML",
-		}
-		if replyTo > 0 {
-			params["reply_to_message_id"] = strconv.FormatInt(replyTo, 10)
-		}
-		_, err := gw.apiCall("sendMessage", params)
-		if err != nil {
-			// Fallback: send plain text without HTML if parsing fails
-			gw.logger.Warn("HTML sendMessage failed, falling back to plain text", "error", err)
-			plainChunks := splitMessage(text, 4000)
-			for _, pc := range plainChunks {
-				gw.sendMessage(chatID, pc, replyTo)
-			}
-			return nil
-		}
-	}
-	return nil
 }

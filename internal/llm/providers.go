@@ -3,6 +3,7 @@ package llm
 import (
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 
 	"github.com/metabbe3/Kyoci-Agent/internal/config"
@@ -13,29 +14,27 @@ import (
 // Provider Factory
 // ==============================================================================
 
-// NewProvider creates a new provider instance based on the provider name.
+// NewProvider creates a new provider instance based on the provider name + URL.
+//
+// Routing: the Anthropic Messages API (real api.anthropic.com, or
+// Anthropic-compatible gateways whose base URL contains "/anthropic" — e.g.
+// z.ai's https://api.z.ai/api/anthropic) uses AnthropicClient, which speaks
+// POST /v1/messages. Everything else uses the OpenAI-compatible client
+// (POST /chat/completions).
 func NewProvider(name string, cfg kyoci.ProviderConfig) (kyoci.Provider, error) {
 	if cfg.BaseURL == "" {
 		return nil, fmt.Errorf("provider %s: base_url is required", name)
 	}
 
-	client, err := NewOpenAIClient(name, cfg)
-	if err != nil {
-		return nil, err
+	if name == "anthropic" || strings.Contains(cfg.BaseURL, "/anthropic") {
+		// AnthropicClient appends "/v1/messages" itself, so the base URL must
+		// NOT already include a trailing "/v1".
+		base := strings.TrimSuffix(cfg.BaseURL, "/v1")
+		cfg.BaseURL = base
+		return NewAnthropicClient(name, cfg)
 	}
 
-	// Configure provider-specific settings
-	switch name {
-	case "anthropic":
-		// Anthropic uses x-api-key header instead of Bearer
-		client.WithXAPIKey("2023-06-01")
-	case "ollama", "lmstudio":
-		// Local OpenAI-compatible servers don't require auth
-	default:
-		// All other providers use standard Bearer token auth
-	}
-
-	return client, nil
+	return NewOpenAIClient(name, cfg)
 }
 
 // ==============================================================================
@@ -122,7 +121,7 @@ func InitProviders(cfg *config.Config) (*ProviderRegistry, error) {
 	// nim (NVIDIA), moonshot (Kimi), qwen (Alibaba DashScope).
 	providerBaseURLs := map[string]string{
 		"openai":      "https://api.openai.com/v1",
-		"anthropic":   "https://api.anthropic.com/v1",
+		"anthropic":   "https://api.anthropic.com",
 		"ollama":      "http://localhost:11434/v1",
 		"lmstudio":    "http://localhost:1234/v1",
 		"gemini":      "https://generativelanguage.googleapis.com/v1beta/openai",
