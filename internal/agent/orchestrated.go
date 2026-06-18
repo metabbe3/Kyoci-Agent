@@ -98,6 +98,20 @@ func (a *Agent) executeOrchestrated(ctx context.Context, task string) (*kyoci.Ta
 	cfg := a.effectiveOrchConfig()
 	a.logger.Info("orchestrator: starting pipeline", "task", task, "max_steps", cfg.MaxSteps, "max_parallel", cfg.MaxParallel)
 
+	// Announce the top-level task as the root of the activity tree. Per-step
+	// rows are emitted by the worker; this is the "Running..." header.
+	taskLabel := task
+	if len(taskLabel) > 80 {
+		taskLabel = taskLabel[:77] + "…"
+	}
+	a.emitActivity(kyoci.ActivityEvent{
+		Type:     kyoci.ActivityTaskStart,
+		TaskID:   "root",
+		TaskName: taskLabel,
+		Role:     a.activityRole,
+		Status:   "running",
+	})
+
 	// Phase 1 — Plan
 	steps, err := a.planTask(ctx, task)
 	if err != nil {

@@ -1,0 +1,1 @@
+Review of dashboard handlers found that while some endpoints correctly implement token validation middleware, several sensitive functions accessed via the main dashboard path lack granular authorization checks, potentially allowing unauthorized users to execute core logic.

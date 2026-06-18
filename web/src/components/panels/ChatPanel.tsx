@@ -31,6 +31,7 @@ import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { Markdown } from "@/components/Markdown";
 import { ThinkingDots } from "@/components/ThinkingDots";
+import { ActivityTree, treeAsArray } from "@/components/ActivityTree";
 import { VoiceInput } from "@/components/VoiceInput";
 import { FileAttach, humanSize } from "@/components/FileAttach";
 import { springs, staggerContainer, staggerItem } from "@/lib/motion";
@@ -440,27 +441,48 @@ function Bubble({ bubble, streaming }: { bubble: Bubble; streaming: boolean }) {
         )}
       >
         {!isUser && !bubble.error ? (
-          bubble.content ? (
-            <>
-              <Markdown content={bubble.content} />
-              {streaming && (
-                <motion.span
-                  className="inline-block ml-0.5 align-baseline"
-                  animate={{ opacity: [1, 0] }}
-                  transition={{ duration: 0.9, repeat: Infinity, ease: "easeInOut" }}
-                  style={{
-                    width: 7,
-                    height: 15,
-                    background: "var(--color-lime)",
-                    marginBottom: -2,
-                    borderRadius: 1,
-                  }}
-                />
-              )}
-            </>
-          ) : streaming ? (
-            <ThinkingDots />
-          ) : null
+          (() => {
+            const activityNodes = bubble.activity ? treeAsArray(bubble.activity) : [];
+            const hasActivity = activityNodes.length > 0;
+            const hasContent = !!bubble.content;
+            return (
+              <>
+                {/* Live activity tree — replaces ThinkingDots while the agent
+                 * runs in agent mode. Stays visible above the final answer
+                 * once streaming completes (collapsible). */}
+                {hasActivity && (
+                  <div className={hasContent ? "mb-2 pb-2 border-b border-white/5" : ""}>
+                    <ActivityTree
+                      nodes={activityNodes}
+                      compact={streaming}
+                      defaultExpanded={false}
+                    />
+                  </div>
+                )}
+                {hasContent ? (
+                  <>
+                    <Markdown content={bubble.content} />
+                    {streaming && (
+                      <motion.span
+                        className="inline-block ml-0.5 align-baseline"
+                        animate={{ opacity: [1, 0] }}
+                        transition={{ duration: 0.9, repeat: Infinity, ease: "easeInOut" }}
+                        style={{
+                          width: 7,
+                          height: 15,
+                          background: "var(--color-lime)",
+                          marginBottom: -2,
+                          borderRadius: 1,
+                        }}
+                      />
+                    )}
+                  </>
+                ) : streaming && !hasActivity ? (
+                  <ThinkingDots />
+                ) : null}
+              </>
+            );
+          })()
         ) : (
           bubble.content
         )}

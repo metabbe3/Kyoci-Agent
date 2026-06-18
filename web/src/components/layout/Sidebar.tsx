@@ -12,6 +12,7 @@ import {
   Settings,
   CircuitBoard,
   ChevronRight,
+  Waypoints,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api, health } from "@/lib/api";
@@ -23,6 +24,7 @@ type BackendState = "checking" | "online" | "offline";
 const navItems = [
   { to: "/overview", label: "Overview", icon: LayoutDashboard, hint: "Mission control" },
   { to: "/chat", label: "Chat", icon: MessageSquare, hint: "Talk to agents" },
+  { to: "/activity", label: "Live Activity", icon: Waypoints, hint: "Agent runs in progress" },
   { to: "/agents", label: "Agents", icon: Users, hint: "Role browser" },
   { to: "/providers", label: "Providers", icon: Plug, hint: "LLM gateways" },
   { to: "/skills", label: "Skills", icon: Sparkles, hint: "Zero-AI shortcuts" },

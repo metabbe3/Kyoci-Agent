@@ -16,13 +16,19 @@ import { toast } from "sonner";
 import { chatStream } from "@/lib/api/sse";
 import { ApiError, ApiErrorKind } from "@/lib/api/errors";
 import { toastApiError } from "@/lib/api/toast";
-import type { ChatMessage, SSEChunk, UploadedFile } from "@/lib/types";
+import { applyActivityEvent } from "@/components/ActivityTree";
+import type { ChatMessage, SSEChunk, UploadedFile, TreeNode, ActivityEvent } from "@/lib/types";
 
-/** One rendered chat turn. `error` marks a turn that ended in failure. */
+/** One rendered chat turn. `error` marks a turn that ended in failure.
+ * `activity` carries the live activity tree for agent-mode turns (empty
+ * for chat-mode). */
 export interface ChatTurn {
   role: "user" | "assistant";
   content: string;
   error?: boolean;
+  /** Live activity tree rows keyed by task_id. Built incrementally from
+   * activity events in the SSE stream. */
+  activity?: Map<string, TreeNode>;
 }
 
 export interface SendParams {
@@ -127,6 +133,18 @@ function applyChunk(chunk: SSEChunk, onUpdateLast: (update: (prev: ChatTurn) => 
       error: true,
       content: prev.content || chunk.error!,
     }));
+    return;
+  }
+  if (chunk.activity) {
+    // Route into the per-turn activity tree. We carry the Map on the turn
+    // so it survives content updates and so the component can render the
+    // tree above the streaming answer.
+    onUpdateLast((prev) => {
+      const evt: ActivityEvent = chunk.activity!;
+      const tree = prev.activity ? new Map(prev.activity) : new Map<string, TreeNode>();
+      const next = applyActivityEvent(tree, evt);
+      return { ...prev, activity: next };
+    });
     return;
   }
   if (chunk.content) {

@@ -73,3 +73,26 @@ func WithRecorder(r TaskRecorder) Option {
 		if r != nil { a.recorder = r }
 	}
 }
+
+// WithActivitySink wires a channel that receives structured activity events
+// for the live activity tree UI. The orchestrator calls this when constructing
+// per-worker agents, passing the per-request SSE stream channel. Events flow
+// through to the chat client AND (via the dashboard's broker) to the global
+// Live Activity panel.
+//
+// The sink is SEND-ONLY (chan<-). Emitters use emitActivity which is a no-op
+// when the sink is nil, so call sites don't need to nil-check.
+func WithActivitySink(ch chan<- kyoci.StreamChunk) Option {
+	return func(a *Agent) { a.activitySink = ch }
+}
+
+// WithActivityTaskID stamps every activity event this agent emits with the
+// given TaskID + TaskName + Role. The orchestrator sets these per-worker so
+// each step's events group into its own tree row.
+func WithActivityTaskID(taskID, taskName, role string) Option {
+	return func(a *Agent) {
+		a.activityTaskID = taskID
+		a.activityTaskName = taskName
+		a.activityRole = role
+	}
+}

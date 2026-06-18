@@ -195,6 +195,9 @@ func streamSSE(w http.ResponseWriter, r *http.Request, getChan func(*string) <-c
 		if chunk.Error != nil {
 			payload["error"] = chunk.Error.Error()
 		}
+		if chunk.Activity != nil {
+			payload["activity"] = chunk.Activity
+		}
 		data, _ := json.Marshal(payload)
 		fmt.Fprintf(w, "data: %s\n\n", data)
 		flusher.Flush()

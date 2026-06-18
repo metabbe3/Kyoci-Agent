@@ -36,9 +36,13 @@ type Server struct {
 
 // NewServer creates a new HTTP server wrapping the orchestrator.
 func NewServer(orch *orchestrator.Orchestrator, cfg *config.Config, cfgPath, addr string) *Server {
+	dash := dashboard.NewServer(orch, cfg, cfgPath)
+	// Wire the orchestrator's global activity publisher to the dashboard's
+	// broker so Live Activity panel subscribers see every event.
+	orch.SetActivityPublisher(dash.PublishActivity)
 	return &Server{
 		orch: orch,
-		dash: dashboard.NewServer(orch, cfg, cfgPath),
+		dash: dash,
 		addr: addr,
 	}
 }

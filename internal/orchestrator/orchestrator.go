@@ -66,6 +66,12 @@ type Orchestrator struct {
 	// via SetHITL from main.go when the operator wires up the gRPC server.
 	// When nil (or MaxRetries=0), tasks execute single-shot as before.
 	hitlCfg *HITLConfig
+
+	// activityPublisher fans out global activity events to the dashboard's
+	// broker (for the Live Activity panel). Nil = no publisher wired; calls
+	// to publishActivity are no-ops. Set via SetActivityPublisher from
+	// cmd/server/main.go after both orchestrator + dashboard exist.
+	activityPublisher func(kyoci.ActivityEvent)
 }
 
 // New creates a new Orchestrator and initializes ALL subsystems.
@@ -598,6 +604,26 @@ func (o *Orchestrator) ExecuteDirect(ctx context.Context, task string, systemPro
 	return result, nil
 }
 
+// publishActivity ships an event to the dashboard's activity broker (if
+// wired). The dashboard subscribes the Live Activity panel to the broker;
+// this is the global path. The per-request SSE stream (chat client inline
+// tree) is separate — agents emit there directly via their activity sink.
+//
+// No-op when no dashboard is wired (e.g. in tests or headless mode).
+func (o *Orchestrator) publishActivity(evt kyoci.ActivityEvent) {
+	if o.activityPublisher == nil {
+		return
+	}
+	o.activityPublisher(evt)
+}
+
+// SetActivityPublisher wires a callback that the orchestrator uses to publish
+// global activity events. Called from cmd/server/main.go after both the
+// orchestrator and dashboard are constructed.
+func (o *Orchestrator) SetActivityPublisher(fn func(kyoci.ActivityEvent)) {
+	o.activityPublisher = fn
+}
+
 // RunExplore dispatches a read-only investigation using the Explore sub-agent
 // worker. The worker shares the orchestrator's LLM router, skills, memory, and
 // logger but gets a filtered tool provider that ONLY exposes glob, grep,
@@ -688,6 +714,10 @@ func (o *Orchestrator) Start() {
 	o.mu.Lock()
 	o.started = true
 	o.mu.Unlock()
+	// Wire the agent package's global publisher so per-agent activity emits
+	// fan out to the dashboard broker (Live Activity panel) without each
+	// agent needing a per-request sink.
+	agent.SetGlobalActivityPublisher(o.publishActivity)
 	o.logger.Info("orchestrator started — ready to accept requests")
 }
 

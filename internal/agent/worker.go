@@ -150,7 +150,18 @@ func (w *orchestratedWorker) reactLoop(ctx context.Context, messages []kyoci.Mes
 	a, step, cfg := w.agent, w.step, w.cfg
 	maxIter := cfg.WorkerMaxIterations
 	toolCallsMade := 0
+	tokensUsed := 0
 	nudged := false // Layer 2: evidence guard fires at most once per worker
+
+	// Announce this worker as a new row in the activity tree. TaskID is the
+	// step ID; TaskName is the step description; ParentID stays empty for
+	// top-level orchestrator steps (set by delegation for sub-agent rows).
+	a.emitActivity(kyoci.ActivityEvent{
+		Type:     kyoci.ActivityTaskStart,
+		TaskID:   fmt.Sprintf("step-%d", step.ID),
+		TaskName: step.Description,
+		Status:   "running",
+	})
 
 	// needsEvidence is constant for the loop: a step whose tool_hint is set OR
 	// which expresses file-creation intent must gather real evidence (a tool
@@ -177,11 +188,29 @@ func (w *orchestratedWorker) reactLoop(ctx context.Context, messages []kyoci.Mes
 
 		resp, err := a.router.Route(ctx, req, a.config.PreferredProvider)
 		if err != nil {
+			a.emitActivity(kyoci.ActivityEvent{
+				Type:     kyoci.ActivityTaskComplete,
+				TaskID:   fmt.Sprintf("step-%d", step.ID),
+				TaskName: step.Description,
+				Status:   "error",
+				Detail:   fmt.Sprintf("LLM call failed: %v", err),
+			})
 			return "", fmt.Errorf("worker LLM call failed (iter %d): %w", iter, err)
 		}
 		if resp == nil {
 			return "", fmt.Errorf("worker LLM returned nil response (iter %d)", iter)
 		}
+		// Surface running metrics for the activity tree. Some providers only
+		// report usage on the final chunk; we accumulate what we have.
+		tokensUsed += int(resp.Usage.TotalTokens)
+		a.emitActivity(kyoci.ActivityEvent{
+			Type:       kyoci.ActivityTaskProgress,
+			TaskID:     fmt.Sprintf("step-%d", step.ID),
+			TaskName:   step.Description,
+			ToolUses:   toolCallsMade,
+			TokensUsed: tokensUsed,
+			Status:     "running",
+		})
 
 		// No tool calls → the model wants to terminate. Decide whether to accept.
 		if len(resp.ToolCalls) == 0 {
@@ -224,6 +253,14 @@ func (w *orchestratedWorker) reactLoop(ctx context.Context, messages []kyoci.Mes
 
 			a.logger.Info("orchestrator: worker done",
 				"step", step.ID, "iters", iter+1, "tool_calls", toolCallsMade, "nudged", nudged)
+			a.emitActivity(kyoci.ActivityEvent{
+				Type:       kyoci.ActivityTaskComplete,
+				TaskID:     fmt.Sprintf("step-%d", step.ID),
+				TaskName:   step.Description,
+				ToolUses:   toolCallsMade,
+				TokensUsed: tokensUsed,
+				Status:     "done",
+			})
 			return out, nil
 		}
 

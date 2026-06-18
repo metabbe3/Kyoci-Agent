@@ -155,7 +155,85 @@ type StreamChunk struct {
 	FinishReason FinishReason
 	// Error is any error that occurred during streaming
 	Error error
+	// Activity carries a structured event for the live activity tree UI.
+	// Nil for content-only chunks (the existing behavior). When non-nil, the
+	// frontend's useChatStream hook routes the event into a per-task TreeNode
+	// instead of appending to the message bubble.
+	Activity *ActivityEvent
 }
+
+// ActivityEvent is one row in the live activity tree the UI renders during
+// agent execution (planner steps, worker tool calls, delegation fan-out).
+// Mirrors Claude Code's terminal activity log:
+//
+//	Running 2 Explore agents…
+//	Map agent tab UI · 10 tool uses · 0 tokens
+//	  ⎿  Reading 4 files…
+//
+// Events are grouped by TaskID — the UI maintains a Map<taskID, TreeNode>
+// and updates it incrementally as events stream in.
+type ActivityEvent struct {
+	// Type is the event variant; see ActivityType constants below.
+	Type ActivityType `json:"type"`
+	// TaskID groups events into one tree row. Workers use their step ID;
+	// delegations use the delegation goal hash; the top-level task uses "root".
+	TaskID string `json:"task_id"`
+	// TaskName is the human label on the tree row header (e.g. "Map agent tab UI",
+	// "Explore auth flow", or the plan step description).
+	TaskName string `json:"task_name"`
+	// ParentID links sub-tasks (delegation fan-out) to their parent. Empty for
+	// top-level tasks. The UI nests children under their parent in the tree.
+	ParentID string `json:"parent_id,omitempty"`
+	// Role labels which agent is running (developer, sre, qa, pm, frontend,
+	// generalist, explore). Helps the Live Activity panel color-code rows.
+	Role string `json:"role,omitempty"`
+	// ToolName is set on sub_activity events emitted from tool calls:
+	// "file", "grep", "glob", "patch", "terminal", "delegation", etc.
+	ToolName string `json:"tool_name,omitempty"`
+	// ToolArgs is a SHORT human-readable summary of the tool call args, e.g.
+	// "README.md" or "TODO in ./src". NOT the full JSON args — that's too
+	// verbose for a tree row. The UI can show this inline.
+	ToolArgs string `json:"tool_args,omitempty"`
+	// Detail is free-text shown as the indented ⎿ sub-line. Examples:
+	// "Reading 4 files…", "Searching 5 patterns", "Filtered tools: kept 6".
+	Detail string `json:"detail,omitempty"`
+	// ToolUses is the running count of tool calls for this task, emitted on
+	// task_progress events. The UI displays it as "· N tool uses".
+	ToolUses int `json:"tool_uses,omitempty"`
+	// TokensUsed is the running token total for this task, emitted on
+	// task_progress events. May be 0 if the provider doesn't report usage
+	// until the final chunk.
+	TokensUsed int `json:"tokens_used,omitempty"`
+	// Status is the task's current state. Set on task_start ("running") and
+	// task_complete ("done" or "error").
+	Status string `json:"status,omitempty"`
+	// Timestamp is unix milliseconds. Set by the emitter; the UI uses it for
+	// elapsed-time display ("3s ago") and ordering.
+	Timestamp int64 `json:"timestamp"`
+}
+
+// ActivityType enumerates the event variants the UI tree knows how to handle.
+type ActivityType string
+
+const (
+	// ActivityTaskStart announces a new tree row. Emitted when a worker step
+	// begins, a delegation spawns, or the top-level task launches.
+	ActivityTaskStart ActivityType = "task_start"
+	// ActivityTaskProgress updates an existing row's metrics (tool_uses,
+	// tokens_used). Emitted after each worker iteration.
+	ActivityTaskProgress ActivityType = "task_progress"
+	// ActivitySubActivity is the indented ⎿ line under a task — typically a
+	// single tool call ("file:read README.md") or a phase transition
+	// ("Filtered tools: kept 6"). These accumulate in a rolling 50-deep log
+	// per task; the latest is always shown.
+	ActivitySubActivity ActivityType = "sub_activity"
+	// ActivityTaskComplete closes a row with final metrics + status. The UI
+	// freezes the row and shows ✓ (done) or ✗ (error).
+	ActivityTaskComplete ActivityType = "task_complete"
+	// ActivityLog is a free-form line appended to the task's sub-activity log
+	// without affecting metrics. Used for diagnostic messages.
+	ActivityLog ActivityType = "log"
+)
 
 // StreamError creates a StreamChunk representing an error.
 func StreamError(err error) StreamChunk {

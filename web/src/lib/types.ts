@@ -93,6 +93,49 @@ export type SSEChunk = {
     completion_tokens: number;
     total_tokens: number;
   };
+  /** Structured activity event for the live activity tree UI. */
+  activity?: ActivityEvent;
+};
+
+/**
+ * One row in the live activity tree. Mirrors the Go `kyoci.ActivityEvent`
+ * struct 1:1. Grouped by `task_id` — the UI maintains a Map and updates
+ * TreeNode state incrementally as events stream in.
+ */
+export type ActivityEvent = {
+  type: "task_start" | "task_progress" | "sub_activity" | "task_complete" | "log";
+  task_id: string;
+  task_name: string;
+  parent_id?: string;
+  role?: string;
+  tool_name?: string;
+  tool_args?: string;
+  detail?: string;
+  tool_uses?: number;
+  tokens_used?: number;
+  status?: string;
+  timestamp: number;
+};
+
+/**
+ * Frontend-side tree node — accumulated state for one task row. Built up from
+ * a stream of ActivityEvents. The Map<task_id, TreeNode> is the source of
+ * truth for the ActivityTree component.
+ */
+export type TreeNode = {
+  taskID: string;
+  taskName: string;
+  parentID?: string;
+  role?: string;
+  toolUses: number;
+  tokensUsed: number;
+  status: "running" | "done" | "error";
+  startedAt: number;
+  finishedAt?: number;
+  /** Rolling log of sub-activity events (tool calls, phase transitions).
+   * Capped at 50; oldest dropped on overflow. */
+  subActivities: ActivityEvent[];
+  children: TreeNode[];
 };
 
 export type SkillInfo = {

@@ -109,6 +109,19 @@ type Agent struct {
 	// executeWorkers binds to (*Agent).runWorker. Tests set it to inject
 	// deterministic workers (e.g., one that sleeps to prove concurrency).
 	orchWorkerFn workerFunc
+
+	// activitySink receives structured activity events for the live activity
+	// tree UI. Nil = no sink wired; emitActivity is a no-op. Set via
+	// WithActivitySink. The orchestrator wires this to the per-request SSE
+	// stream so events flow to the chat client AND to the global broker.
+	activitySink chan<- kyoci.StreamChunk
+
+	// activityTaskID is the TaskID stamped onto every activity event this
+	// agent emits. The orchestrator sets it per-worker so each step's events
+	// group into its own tree row. Defaults to "root" for the top-level agent.
+	activityTaskID   string
+	activityTaskName string
+	activityRole     string
 }
 
 // NewAgent creates a new agent with the given configuration.
@@ -457,8 +470,147 @@ func (a *Agent) act(ctx context.Context, toolCall kyoci.ToolCall) (string, error
 		return "", fmt.Errorf("failed to parse tool arguments: %w", err)
 	}
 
+	// Emit a sub_activity event for the live activity tree UI. Best-effort:
+	// summarize the args into a short human-readable string. Skip on tools
+	// where args would be too verbose (terminal command, patch hunks).
+	a.emitActivity(kyoci.ActivityEvent{
+		Type:     kyoci.ActivitySubActivity,
+		TaskID:   a.activityTaskID,
+		TaskName: a.activityTaskName,
+		Role:     a.activityRole,
+		ToolName: toolCall.Name,
+		ToolArgs: summarizeToolArgs(toolCall.Name, params),
+		Detail:   summarizeToolDetail(toolCall.Name, params),
+	})
+
 	// Execute tool
 	return a.tools.Execute(ctx, toolCall.Name, params)
+}
+
+// emitActivity ships an event to the wired activity sink (if any). No-op when
+// no sink is set, so callers can invoke unconditionally without nil-checks.
+// Non-blocking: if the sink channel is full, the event is dropped (the live
+// tree is best-effort; we never block agent execution on UI telemetry).
+//
+// Also publishes to the global activity publisher (if wired by the
+// orchestrator) so the Live Activity panel and per-request SSE stream both
+// receive the event.
+func (a *Agent) emitActivity(evt kyoci.ActivityEvent) {
+	if evt.TaskID == "" {
+		evt.TaskID = "root"
+	}
+	if evt.Timestamp == 0 {
+		evt.Timestamp = nowUnixMillisAgent()
+	}
+	// Per-request sink (used by chatAgent to inline events into the SSE stream).
+	if a.activitySink != nil {
+		select {
+		case a.activitySink <- kyoci.StreamChunk{Activity: &evt}:
+		default:
+			// Drop on full — UI catches up via subsequent events.
+		}
+	}
+	// Global publisher (orchestrator → dashboard broker → Live Activity panel).
+	if globalActivityPublisher != nil {
+		globalActivityPublisher(evt)
+	}
+}
+
+// globalActivityPublisher is set by the orchestrator at startup so per-agent
+// emits fan out to the dashboard's activity broker. Nil in tests / headless.
+// This avoids the need to thread a sink through every agent construction.
+var globalActivityPublisher func(kyoci.ActivityEvent)
+
+// SetGlobalActivityPublisher wires the orchestrator-wide publisher. Called
+// from internal/orchestrator/orchestrator.go Start(). Passing nil unsubscribes.
+func SetGlobalActivityPublisher(fn func(kyoci.ActivityEvent)) {
+	globalActivityPublisher = fn
+}
+
+// nowUnixMillisAgent is the activity-event timestamp source. Wrapper so tests
+// can stub the clock if they need to assert exact timestamps.
+func nowUnixMillisAgent() int64 {
+	return time.Now().UnixMilli()
+}
+
+// summarizeToolArgs returns a SHORT (<80 char) human-readable summary of the
+// tool args for the activity tree row. Returns "" for tools whose args are
+// too verbose to summarize (terminal command, patch hunks).
+func summarizeToolArgs(name string, params map[string]interface{}) string {
+	switch name {
+	case "file":
+		action, _ := params["action"].(string)
+		if action == "" {
+			action = "read"
+		}
+		path, _ := params["path"].(string)
+		return action + " " + path
+	case "grep":
+		pat, _ := params["pattern"].(string)
+		return "pattern=" + pat
+	case "glob":
+		pat, _ := params["pattern"].(string)
+		return pat
+	case "git":
+		sub, _ := params["subcommand"].(string)
+		return sub
+	case "codesearch":
+		pat, _ := params["pattern"].(string)
+		return pat
+	case "lsp":
+		op, _ := params["operation"].(string)
+		return op
+	case "todo", "notes":
+		return ""
+	case "delegation":
+		// Delegation args are too verbose; the wrapper in delegation.go
+		// emits its own task_start/complete events with cleaner labels.
+		return ""
+	default:
+		return ""
+	}
+}
+
+// summarizeToolDetail produces the indented ⎿ line for a tool call. Slightly
+// more descriptive than ToolArgs — used for the live "what I'm doing" line.
+func summarizeToolDetail(name string, params map[string]interface{}) string {
+	switch name {
+	case "file":
+		action, _ := params["action"].(string)
+		if action == "" {
+			action = "read"
+		}
+		path, _ := params["path"].(string)
+		switch action {
+		case "read":
+			return "Reading " + path
+		case "write":
+			return "Writing " + path
+		case "list":
+			return "Listing " + path
+		case "search":
+			return "Searching in " + path
+		default:
+			return action + " " + path
+		}
+	case "grep":
+		pat, _ := params["pattern"].(string)
+		return "Searching for " + pat
+	case "glob":
+		pat, _ := params["pattern"].(string)
+		return "Finding " + pat
+	case "git":
+		sub, _ := params["subcommand"].(string)
+		return "git " + sub
+	case "codesearch":
+		pat, _ := params["pattern"].(string)
+		return "Searching " + pat
+	case "lsp":
+		op, _ := params["operation"].(string)
+		return "LSP " + op
+	default:
+		return ""
+	}
 }
 
 // SetConfig updates the agent configuration.

@@ -11,6 +11,7 @@ import { ModelsPanel } from "@/components/panels/ModelsPanel";
 import { HardwarePanel } from "@/components/panels/HardwarePanel";
 import { StatusPanel } from "@/components/panels/StatusPanel";
 import { SettingsPanel } from "@/components/panels/SettingsPanel";
+import { ActivityPanel } from "@/components/panels/ActivityPanel";
 import { pageVariants } from "@/lib/motion";
 
 /** Wrap a panel element in a per-route boundary so one crash doesn't blank the app. */
@@ -35,6 +36,7 @@ function AnimatedRoutes() {
           <Route path="/chat" element={panel("Chat", <ChatPanel />)} />
           <Route path="/overview" element={panel("Overview", <OverviewPanel />)} />
           <Route path="/agents" element={panel("Agents", <AgentsPanel />)} />
+          <Route path="/activity" element={panel("Live Activity", <ActivityPanel />)} />
           <Route path="/providers" element={panel("Providers", <ProvidersPanel />)} />
           <Route path="/skills" element={panel("Skills", <SkillsPanel />)} />
           <Route path="/models" element={panel("Models", <ModelsPanel />)} />

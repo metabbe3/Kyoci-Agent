@@ -25,20 +25,22 @@ const MaskedAPIKey = "••••"
 // Server wires the orchestrator + config path to the dashboard HTTP handlers.
 // All handlers are methods on Server so they share state cleanly.
 type Server struct {
-	orch    *orchestrator.Orchestrator
-	cfg     *config.Config
-	cfgPath string
-	logger  *slog.Logger
+	orch            *orchestrator.Orchestrator
+	cfg             *config.Config
+	cfgPath         string
+	logger          *slog.Logger
+	activityBroker  *ActivityBroker
 }
 
 // NewServer constructs a dashboard server. cfgPath is where PUT /config will
 // write back atomically (with a .backup sibling).
 func NewServer(orch *orchestrator.Orchestrator, cfg *config.Config, cfgPath string) *Server {
 	return &Server{
-		orch:    orch,
-		cfg:     cfg,
-		cfgPath: cfgPath,
-		logger:  slog.Default().With("component", "dashboard"),
+		orch:           orch,
+		cfg:            cfg,
+		cfgPath:        cfgPath,
+		logger:         slog.Default().With("component", "dashboard"),
+		activityBroker: NewActivityBroker(),
 	}
 }
 
@@ -57,6 +59,7 @@ func (s *Server) Routes() map[string]http.HandlerFunc {
 		"/api/dashboard/hardware":        s.handleHardware,
 		"/api/dashboard/recommendations": s.handleRecommendations,
 		"/api/dashboard/skills":          s.handleSkills,
+		"/api/dashboard/activity":        s.handleActivityStream,
 	}
 }
 

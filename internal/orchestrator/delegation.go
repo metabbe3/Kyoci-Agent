@@ -39,6 +39,32 @@ func (o *Orchestrator) wireDelegation(tool *builtin.DelegationTool) {
 	tool.SetCallback(func(ctx context.Context, goal string, contextInfo string) (string, error) {
 		slog.Info("delegation callback invoked", "goal", goal, "context_len", len(contextInfo))
 
+		// Emit a task_start row for this delegation. The orchestrator's worker
+		// will fill in sub-activity + progress events as the sub-agent runs.
+		o.publishActivity(kyoci.ActivityEvent{
+			Type:     kyoci.ActivityTaskStart,
+			TaskID:   "delegation:" + delegationID(goal),
+			TaskName: delegationLabel(goal),
+			ParentID: "root",
+			Role:     delegationRole(goal),
+			Status:   "running",
+		})
+		finishOK := true
+		defer func() {
+			status := "done"
+			if !finishOK {
+				status = "error"
+			}
+			o.publishActivity(kyoci.ActivityEvent{
+				Type:     kyoci.ActivityTaskComplete,
+				TaskID:   "delegation:" + delegationID(goal),
+				TaskName: delegationLabel(goal),
+				ParentID: "root",
+				Role:     delegationRole(goal),
+				Status:   status,
+			})
+		}()
+
 		// Explore dispatch — read-only sub-agent with context isolation.
 		if agent.HasExplorePrefix(goal) {
 			question := agent.StripExplorePrefix(goal)
@@ -46,7 +72,12 @@ func (o *Orchestrator) wireDelegation(tool *builtin.DelegationTool) {
 				question = question + "\n\nAdditional context: " + contextInfo
 			}
 			slog.Info("delegation: routing to explore worker", "question", question)
-			return o.RunExplore(ctx, question)
+			out, err := o.RunExplore(ctx, question)
+			if err != nil {
+				finishOK = false
+				return "", err
+			}
+			return out, nil
 		}
 
 		// Build the task string with quality prefix
@@ -57,6 +88,7 @@ func (o *Orchestrator) wireDelegation(tool *builtin.DelegationTool) {
 
 		result, err := o.Execute(ctx, taskStr, kyoci.RoleCustom)
 		if err != nil {
+			finishOK = false
 			return "", err
 		}
 
@@ -69,4 +101,44 @@ func (o *Orchestrator) wireDelegation(tool *builtin.DelegationTool) {
 
 		return result.Content + verification, nil
 	})
+}
+
+// delegationID returns a stable short ID for a delegation goal. Used as the
+// TaskID so multiple delegations with the same goal collapse into one tree
+// row (rare but possible).
+func delegationID(goal string) string {
+	// First 8 hex chars of a stable hash — good enough for grouping in the
+	// activity tree. Not crypto-relevant.
+	h := uint64(1469598103934665603) // FNV offset basis
+	for i := 0; i < len(goal); i++ {
+		h ^= uint64(goal[i])
+		h *= 1099511628211 // FNV prime
+	}
+	return fmt.Sprintf("%016x", h)[:8]
+}
+
+// delegationLabel returns the human-readable label for the delegation row.
+// For explore: prefixes, strips the prefix and truncates. Otherwise uses the
+// raw goal (truncated to 80 chars).
+func delegationLabel(goal string) string {
+	if agent.HasExplorePrefix(goal) {
+		q := agent.StripExplorePrefix(goal)
+		if len(q) > 80 {
+			return q[:77] + "…"
+		}
+		return "Explore: " + q
+	}
+	if len(goal) > 80 {
+		return goal[:77] + "…"
+	}
+	return goal
+}
+
+// delegationRole guesses which agent role a delegation targets. Explores get
+// "explore"; everything else gets "generalist" (the default role).
+func delegationRole(goal string) string {
+	if agent.HasExplorePrefix(goal) {
+		return "explore"
+	}
+	return "generalist"
 }
