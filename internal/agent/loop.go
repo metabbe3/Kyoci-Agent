@@ -1183,10 +1183,11 @@ func synthesizeFileWriteCall(filename, content string) kyoci.ToolCall {
 // Decision rules (conservative — false positives are worse than false negatives
 // because we'd overwrite real files):
 //  1. Block has an explicit filename in the fence info string → write it.
-//  2. Block has a language AND we can guess a filename from the step
-//     description (e.g. description mentions "script.js" + block is ```js)
-//     → write it.
-//  3. Block has a language but no filename hint → write to the
+//  2. Block's language matches a file mentioned in stepDescription
+//     (e.g. description mentions "script.js" + block is ```js) → write it
+//     to that file. Handles the common case of "fix these N files" where
+//     the model emits one block per file.
+//  3. Block has a language but no description match → write to the
 //     language-default filename ONLY if there's exactly ONE block (ambiguous
 //     otherwise — multiple unnamed blocks likely aren't all "main.go").
 //  4. Block has no language → skip (could be anything).
@@ -1198,24 +1199,102 @@ func interceptCodeBlocks(modelOutput, stepDescription string) []kyoci.ToolCall {
 	if len(blocks) == 0 {
 		return nil
 	}
+	// Pull ALL filenames mentioned in the description up front so we can
+	// pair them with blocks by extension (script.js → JS block, index.html
+	// → HTML block). Critical for the planner-salvage case where the model
+	// fixes multiple files in one shot.
+	descFiles := extractAllFilenamesFromDescription(stepDescription)
 	var out []kyoci.ToolCall
+	usedFiles := map[string]bool{} // avoid double-writing the same filename
 	for _, b := range blocks {
 		if b.Lang == "" {
 			continue
 		}
 		filename := b.Filename
+		confident := filename != "" // explicit in fence info string
+		if filename == "" {
+			// Try to pair this block with a description-mentioned file by
+			// language/extension match.
+			for _, df := range descFiles {
+				if usedFiles[df] {
+					continue
+				}
+				if fileLangMatches(df, b.Lang) {
+					filename = df
+					usedFiles[df] = true
+					confident = true
+					break
+				}
+			}
+		}
 		if filename == "" {
 			filename = guessFilenameForBlock(b, stepDescription)
 		}
 		if filename == "" {
 			continue
 		}
-		// Bail on multi-block outputs where we're guessing filenames — too
-		// likely we'd overwrite main.go with the wrong content.
-		if filename == defaultFilenameForLang(b.Lang) && len(blocks) > 1 {
+		// Bail on multi-block outputs where we're GUESSING filenames — too
+		// likely we'd overwrite main.go with the wrong content. Skip this
+		// guard when we confidently paired via description or fence info.
+		if !confident && filename == defaultFilenameForLang(b.Lang) && len(blocks) > 1 {
 			continue
 		}
 		out = append(out, synthesizeFileWriteCall(filename, b.Body))
+	}
+	return out
+}
+
+// fileLangMatches reports whether the file extension maps to the given fence
+// language. Used to pair blocks with description-mentioned files.
+func fileLangMatches(filename, lang string) bool {
+	ext := strings.ToLower(filepath.Ext(filename))
+	want := ""
+	switch ext {
+	case ".go":
+		want = "go"
+	case ".js", ".mjs", ".cjs":
+		want = "js"
+	case ".jsx":
+		want = "jsx"
+	case ".ts":
+		want = "ts"
+	case ".tsx":
+		want = "tsx"
+	case ".py":
+		want = "py"
+	case ".rb":
+		want = "ruby"
+	case ".rs":
+		want = "rust"
+	case ".html", ".htm":
+		want = "html"
+	case ".css":
+		want = "css"
+	case ".sh", ".bash":
+		want = "sh"
+	case ".java":
+		want = "java"
+	case ".cpp", ".cc", ".cxx":
+		want = "cpp"
+	case ".c":
+		want = "c"
+	}
+	return want == lang || (want == "js" && lang == "javascript") ||
+		(want == "ts" && lang == "typescript") ||
+		(want == "py" && lang == "python")
+}
+
+// extractAllFilenamesFromDescription returns ALL filename-like tokens in the
+// description, not just the first. Used to pair multiple code blocks with
+// multiple mentioned files (e.g. "fix script.js and index.html").
+func extractAllFilenamesFromDescription(desc string) []string {
+	matches := descFileRe.FindAllString(desc, -1)
+	if matches == nil {
+		return nil
+	}
+	out := make([]string, 0, len(matches))
+	for _, m := range matches {
+		out = append(out, filepath.Base(m))
 	}
 	return out
 }

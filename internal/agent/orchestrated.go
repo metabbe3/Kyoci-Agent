@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -115,6 +116,49 @@ func (a *Agent) executeOrchestrated(ctx context.Context, task string) (*kyoci.Ta
 	// Phase 1 — Plan
 	steps, err := a.planTask(ctx, task)
 	if err != nil {
+		// Planner failed to produce parseable JSON. The 8B model often just
+		// solves the task in one shot instead of decomposing it. If the raw
+		// output has substance (code blocks or substantial prose), use it as
+		// the answer directly instead of erroring out → 500 in the chat UI.
+		if rawAnswer, ok := salvagePlannerOutput(err); ok {
+			a.logger.Info("orchestrator: planner parse failed; salvaging raw output as answer",
+				"raw_len", len(rawAnswer), "err", err.Error())
+			a.emitActivity(kyoci.ActivityEvent{
+				Type:     kyoci.ActivityLog,
+				TaskID:   "root",
+				TaskName: "Planner fallback",
+				Detail:   "Model answered directly instead of planning; using raw output as the answer",
+			})
+			// If the salvaged output has code blocks AND the task is file-
+			// creation-shaped, fire the interceptor so the writes land.
+			// Otherwise just return the prose.
+			salvaged := rawAnswer
+			if isFileCreationStep(task) {
+				if calls := interceptCodeBlocks(rawAnswer, task); len(calls) > 0 {
+					a.logger.Info("orchestrator: planner-salvage interceptor firing",
+						"blocks", len(calls))
+					a.emitActivity(kyoci.ActivityEvent{
+						Type:     kyoci.ActivityLog,
+						TaskID:   "root",
+						TaskName: "Planner fallback",
+						Detail:   fmt.Sprintf("Interceptor: auto-writing %d file(s) from planner output", len(calls)),
+					})
+					for _, tc := range calls {
+						if _, terr := a.act(ctx, tc); terr != nil {
+							a.logger.Warn("orchestrator: planner-salvage write failed",
+								"err", terr)
+						}
+					}
+				}
+			}
+			return &kyoci.TaskResult{
+				Content:       salvaged,
+				ToolCallsMade: 0,
+				Iterations:    1,
+				Usage:         kyoci.TokenUsage{},
+				Error:         nil,
+			}, nil
+		}
 		return nil, fmt.Errorf("orchestrator planner failed: %w", err)
 	}
 	if len(steps) == 0 {
@@ -449,6 +493,57 @@ func (a *Agent) planTask(ctx context.Context, task string) ([]OrchStep, error) {
 	}
 
 	return steps, nil
+}
+
+// salvagePlannerOutput inspects a planner error and, when the underlying raw
+// planner output has substance, returns it as a usable answer. Used by
+// executeOrchestrated's fallback path: instead of bubbling the parse error up
+// to the chat UI as a 500, we treat the model's "I answered instead of
+// planned" output as the task result.
+//
+// Returns (rawAnswer, true) when the recovered output has:
+//   - ≥1 fenced code block (model produced a fix), OR
+//   - ≥200 chars of substantive prose (model produced an explanation).
+//
+// Returns ("", false) for empty/short/malformed outputs — those still error
+// out, because they're genuine planner failures with nothing to salvage.
+//
+// The recovery relies on planTask's error format `"... (raw: %q)"` — we parse
+// the trailing quoted raw output back out of the error string. If that format
+// ever changes, update the regex.
+func salvagePlannerOutput(planErr error) (string, bool) {
+	if planErr == nil {
+		return "", false
+	}
+	msg := planErr.Error()
+	// planTask format: "planner output parse failed: %w (raw: %q)"
+	// Look for the LAST `(raw: "...")` since nested errors may have multiple.
+	rawRe := regexp.MustCompile(`\(raw: "((?:[^"\\]|\\.)*)"\)`)
+	matches := rawRe.FindStringSubmatch(msg)
+	if matches == nil {
+		return "", false
+	}
+	// matches[1] is the captured quoted-string body, still Go-quoted. Unquote.
+	rawStr, err := strconv.Unquote("\"" + matches[1] + "\"")
+	if err != nil {
+		// Fall back to the raw captured text if unquote fails.
+		rawStr = matches[1]
+	}
+	rawStr = strings.TrimSpace(rawStr)
+	if rawStr == "" {
+		return "", false
+	}
+
+	// Substance check 1: contains at least one fenced code block.
+	if extractCodeBlocks(rawStr) != nil {
+		return rawStr, true
+	}
+	// Substance check 2: ≥200 chars of prose. Cheap proxy for "the model
+	// actually said something" vs "spat out a 5-char garbage token".
+	if len(rawStr) >= 200 {
+		return rawStr, true
+	}
+	return "", false
 }
 
 // parseOrchSteps extracts a []OrchStep from the model's text output. It tries
