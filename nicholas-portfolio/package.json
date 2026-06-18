@@ -1,0 +1,16 @@
+{
+  "name": "nicholas-portfolio",
+  "version": "1.0.0",
+  "description": "Personal portfolio landing page for Nicholas - Software Engineer",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "keywords": ["portfolio", "software-engineer", "landing-page"],
+  "author": "Nicholas",
+  "license": "ISC",
+  "type": "module"
+}
