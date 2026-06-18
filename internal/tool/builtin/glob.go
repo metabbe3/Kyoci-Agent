@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/metabbe3/Kyoci-Agent/internal/taskctx"
 	kyoci "github.com/metabbe3/Kyoci-Agent/pkg"
 )
 
@@ -46,6 +47,23 @@ func (g *GlobTool) Execute(ctx context.Context, params map[string]interface{}) (
 		root = "."
 	}
 	root = expandHome(root)
+	// Sandbox ceiling: when set, refuse to walk any root outside the sandbox.
+	// Combats 8B "wandering" — agent scoped to /projects/calculator/ cannot
+	// enumerate sibling dirs to drift into.
+	if sandbox := taskctx.SandboxFromCtx(ctx); sandbox != "" {
+		sandboxAbs, err := filepath.Abs(sandbox)
+		if err != nil {
+			return "", fmt.Errorf("invalid sandbox %q: %w", sandbox, err)
+		}
+		rootAbs, err := filepath.Abs(root)
+		if err != nil {
+			return "", fmt.Errorf("invalid root %q: %w", root, err)
+		}
+		rel, err := filepath.Rel(sandboxAbs, rootAbs)
+		if err != nil || strings.HasPrefix(rel, "..") {
+			return "", fmt.Errorf("access denied: glob root %q outside sandbox %q", rootAbs, sandboxAbs)
+		}
+	}
 	maxResults := 200
 	if v, ok := params["max_results"].(int); ok && v > 0 {
 		maxResults = v

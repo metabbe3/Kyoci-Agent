@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -332,6 +334,17 @@ func (o *Orchestrator) Execute(ctx context.Context, task string, roleType kyoci.
 	// the agent's log path pick them up without explicit plumbing.
 	ctx = taskctx.WithWorkspace(ctx, taskDir)
 	ctx = WithRunLogger(ctx, runLogger)
+
+	// 8B-optimization Strategy 1: if the task references a specific subdir,
+	// lock the file/glob/grep tools to that subtree. Combats the "wandering
+	// agent" failure mode where small models burn their attention budget
+	// scanning irrelevant sibling dirs. Detection is intentionally simple —
+	// we look for a path-like token in the task string. If absent, no
+	// sandbox is set (full access, current behavior).
+	if sandbox := detectTaskSandbox(task); sandbox != "" {
+		ctx = taskctx.WithSandbox(ctx, sandbox)
+		o.logger.Info("orchestrator: task sandbox set", "sandbox", sandbox, "task_id", taskID)
+	}
 
 	// Treat the role as the abstract interface from here on so the per-task
 	// clone returned by roleWithRunLogger can be a different concrete type.
@@ -770,4 +783,65 @@ func (o *Orchestrator) GetProviderRegistry() *llm.ProviderRegistry {
 // registered skills only changes at startup.
 func (o *Orchestrator) GetSkillRegistry() *skill.Registry {
 	return o.skillReg
+}
+
+// detectTaskSandbox inspects a task string for a path-like reference to a
+// specific subdir. Returns the resolved absolute path when found, "" otherwise.
+// Used to set per-task filesystem sandbox for the 8B "wandering agent" fix.
+//
+// Recognized patterns:
+//   - Absolute path: "/projects/calculator", "/Users/foo/proj"
+//   - Relative with subdir marker: "./projects/calculator", "projects/calculator/"
+//   - Quote-delimited: 'fix the bug in "/projects/calculator"'
+//
+// Returns "" for ambiguous tasks (no clear subdir target) so we don't
+// over-lock agents working at the project root.
+func detectTaskSandbox(task string) string {
+	// Strip newlines so multi-line tasks scan as one.
+	task = strings.ReplaceAll(task, "\n", " ")
+
+	// Try quoted paths first — highest confidence.
+	quoted := regexp.MustCompile(`"((?:/|\./|\.\./|[A-Za-z]:\\)[^"]+)"`)
+	if m := quoted.FindStringSubmatch(task); m != nil {
+		if abs, err := filepath.Abs(m[1]); err == nil {
+			if isDir(abs) {
+				return abs
+			}
+		}
+	}
+
+	// Bare absolute Unix path with at least one slash and a directory suffix
+	// or middle slash. Avoid matching file paths (those usually have extensions).
+	absPath := regexp.MustCompile(`(?:^|\s)((?:/)[a-zA-Z0-9_./-]+/[a-zA-Z0-9_.-]*)`)
+	for _, m := range absPath.FindAllStringSubmatch(task, -1) {
+		candidate := strings.TrimRight(m[1], ".,;:!?")
+		// Skip if it looks like a file (has a dot extension).
+		if filepath.Ext(candidate) != "" {
+			continue
+		}
+		if abs, err := filepath.Abs(candidate); err == nil {
+			if isDir(abs) {
+				return abs
+			}
+		}
+	}
+
+	// Relative "./foo/bar" or "foo/bar/" with directory suffix.
+	relPath := regexp.MustCompile(`(?:^|\s)(\.\.?/[a-zA-Z0-9_./-]+/[a-zA-Z0-9_.-]*|projects/[a-zA-Z0-9_./-]+)`)
+	if m := relPath.FindStringSubmatch(task); m != nil {
+		candidate := strings.TrimRight(m[1], ".,;:!?/")
+		if abs, err := filepath.Abs(candidate); err == nil {
+			if isDir(abs) {
+				return abs
+			}
+		}
+	}
+
+	return ""
+}
+
+// isDir reports whether path exists and is a directory.
+func isDir(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
 }

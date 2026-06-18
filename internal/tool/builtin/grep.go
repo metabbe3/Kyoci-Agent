@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/metabbe3/Kyoci-Agent/internal/taskctx"
 	kyoci "github.com/metabbe3/Kyoci-Agent/pkg"
 )
 
@@ -55,6 +56,22 @@ func (g *GrepTool) Execute(ctx context.Context, params map[string]interface{}) (
 		path = "."
 	}
 	path = expandHome(path)
+	// Sandbox ceiling: refuse any search target outside the sandbox root.
+	// Same rationale as glob — keeps the 8B agent from drifting across dirs.
+	if sandbox := taskctx.SandboxFromCtx(ctx); sandbox != "" {
+		sandboxAbs, err := filepath.Abs(sandbox)
+		if err != nil {
+			return "", fmt.Errorf("invalid sandbox %q: %w", sandbox, err)
+		}
+		pathAbs, err := filepath.Abs(path)
+		if err != nil {
+			return "", fmt.Errorf("invalid path %q: %w", path, err)
+		}
+		rel, err := filepath.Rel(sandboxAbs, pathAbs)
+		if err != nil || strings.HasPrefix(rel, "..") {
+			return "", fmt.Errorf("access denied: grep path %q outside sandbox %q", pathAbs, sandboxAbs)
+		}
+	}
 	glob, _ := params["glob"].(string)
 	ignoreCase := false
 	if v, ok := params["ignore_case"].(bool); ok {

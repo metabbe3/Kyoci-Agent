@@ -111,6 +111,7 @@ func (f *FileTool) Execute(ctx context.Context, params map[string]interface{}) (
 	// no mutation of the shared f.allowedDirs slice, so concurrent tasks on
 	// other workspaces are unaffected.
 	workspace := taskctx.WorkspaceFromCtx(ctx)
+	sandbox := taskctx.SandboxFromCtx(ctx)
 
 	// Expand ~ and resolve to an absolute path BEFORE the allowed-dirs check,
 	// so the model's ~/Documents resolves to $HOME/Documents and passes the
@@ -119,6 +120,22 @@ func (f *FileTool) Execute(ctx context.Context, params map[string]interface{}) (
 	absPath, err := f.expandPath(path, workspace)
 	if err != nil {
 		return "", err
+	}
+
+	// Sandbox ceiling: when set, reject any path that escapes the sandbox
+	// root even if it's otherwise allowed. This is the 8B-wandering fix —
+	// a task scoped to /projects/calculator/ cannot read /projects/auth/
+	// even if both are in the static allowed-dirs list.
+	if sandbox != "" {
+		sandboxAbs, err := filepath.Abs(sandbox)
+		if err != nil {
+			return "", fmt.Errorf("invalid sandbox root %q: %w", sandbox, err)
+		}
+		rel, err := filepath.Rel(sandboxAbs, absPath)
+		if err != nil || strings.HasPrefix(rel, "..") {
+			f.logger.Warn("path outside sandbox", "path", absPath, "sandbox", sandboxAbs)
+			return "", fmt.Errorf("access denied: path %q outside sandbox %q", absPath, sandboxAbs)
+		}
 	}
 
 	// Validate path

@@ -219,6 +219,43 @@ func (w *orchestratedWorker) reactLoop(ctx context.Context, messages []kyoci.Mes
 				out = fmt.Sprintf("[step %d produced no output]", step.ID)
 			}
 
+			// 8B-optimization Strategy 2: code-block interceptor. If the model
+			// emitted markdown code blocks instead of calling file:write, AND
+			// this is a file-creation step, synthesize the writes on its behalf.
+			// Combats the "chatty developer" failure mode where small models
+			// default to Markdown output. Conservative: only fires on
+			// isFileCreationStep and only when we can guess a filename.
+			if isFileCreationStep(step.Description) && !nudged {
+				if synthCalls := interceptCodeBlocks(out, step.Description); len(synthCalls) > 0 {
+					a.logger.Info("orchestrator: code-block interceptor firing",
+						"step", step.ID, "blocks", len(synthCalls))
+					a.emitActivity(kyoci.ActivityEvent{
+						Type:     kyoci.ActivityLog,
+						TaskID:   fmt.Sprintf("step-%d", step.ID),
+						TaskName: step.Description,
+						Detail:   fmt.Sprintf("Interceptor: model emitted %d code block(s) as markdown; auto-writing", len(synthCalls)),
+					})
+					for _, tc := range synthCalls {
+						result, terr := a.act(ctx, tc)
+						if terr != nil {
+							a.logger.Warn("orchestrator: interceptor write failed",
+								"step", step.ID, "err", terr)
+							result = fmt.Sprintf("[interceptor write failed: %v]", terr)
+						}
+						messages = append(messages, kyoci.Message{
+							Role:       kyoci.RoleTool,
+							Content:    result,
+							ToolCallID: tc.ID,
+							Name:       tc.Name,
+						})
+						toolCallsMade++
+					}
+					// Continue the loop so the model can verify the writes and
+					// produce its final finding — don't accept `out` as final yet.
+					continue
+				}
+			}
+
 			// Layer 2: evidence guard. On the FIRST turn, if the model answered
 			// from memory, inject the WorkerEvidenceNudge once and re-run instead
 			// of accepting. This is the load-bearing fix: qwen2.5-coder:14b

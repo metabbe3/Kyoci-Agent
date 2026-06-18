@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -65,6 +67,15 @@ type AgentConfig struct {
 	// thinking state machine. This is the reliable default for multi-step
 	// tasks on 14B models — each LLM call gets ONE job.
 	Orchestration OrchestratorConfig
+
+	// EnableSprint switches the agent to single-turn "sprint" mode: one LLM
+	// call, no tools, no chat history carried forward. 8B-optimization
+	// Strategy 3 — for pure-reasoning tasks (explain, summarize, classify)
+	// the small model is more reliable as a pure function than as an
+	// autonomous agent. Default false. When true, Execute() bypasses the
+	// orchestrator pipeline and the ReAct loop and goes straight to a
+	// single router.Route call.
+	EnableSprint bool
 }
 
 // DefaultAgentConfig returns a configuration with sensible defaults.
@@ -210,6 +221,15 @@ func (a *Agent) Execute(ctx context.Context, task string) (*kyoci.TaskResult, er
 	// flag is false, so existing tests and behavior are preserved.
 	if a.config.EnableThinking {
 		return a.executeWithThinking(ctx, task)
+	}
+
+	// a.1b Sprint mode — single LLM call, no tools, no context carried forward.
+	// 8B-optimization Strategy 3: treat the model as a pure function for
+	// pure-reasoning tasks (explain, summarize, classify). Checked BEFORE
+	// orchestration so a step the planner marked tool_hint="sprint" short-
+	// circuits into one shot instead of an autonomous loop.
+	if a.config.EnableSprint {
+		return a.executeSprint(ctx, task)
 	}
 
 	// a.1 Orchestrator-Worker pipeline — when Orchestration.Enabled is set,
@@ -979,4 +999,244 @@ func parseFencedJSONToolCalls(content string) []kyoci.ToolCall {
 			Arguments: string(argsBytes),
 		},
 	}
+}
+
+// =====================================================================================
+// Code-block interceptor — Strategy 2 of the 8B-agent optimization.
+//
+// When a small (8B-class) model emits a code block in markdown instead of
+// calling file:write / patch, the orchestrator extracts the block and
+// synthesizes the tool call on the model's behalf. This combats the
+// "chatty developer" failure mode where the model defaults to outputting
+// the solution as Markdown rather than executing it.
+//
+// extractCodeBlocks returns []codeBlock — each carries the language, an
+// optional filename (from the fence info string OR guessed), and the body.
+// Callers (the worker sub-loop) decide whether to write each block based on
+// confidence + the step's intent.
+// =====================================================================================
+
+// codeBlock is one extracted markdown code block.
+type codeBlock struct {
+	Lang     string // "go", "js", "py", "html", etc. Lowercased. Empty if fence had no lang.
+	Filename string // "main.go" if the fence info string named a file. "" if not.
+	Body     string // Raw code body (no fence, no info string).
+}
+
+// codeBlockRe matches a fenced code block:```lang filename\nbody\n```.
+// Captures: 1=lang+filename info string (spaces allowed), 2=body.
+var codeBlockRe = regexp.MustCompile("(?s)```([a-zA-Z0-9_+./ -]*)\n(.*?)```")
+
+// extractCodeBlocks parses ALL fenced code blocks out of content. Returns
+// nil if there are none. Each block's Filename is parsed from the fence's
+// info string when the info string contains a path-like token after the
+// language hint (e.g. ```go main.go).
+func extractCodeBlocks(content string) []codeBlock {
+	matches := codeBlockRe.FindAllStringSubmatch(content, -1)
+	if matches == nil {
+		return nil
+	}
+	out := make([]codeBlock, 0, len(matches))
+	for _, m := range matches {
+		info := strings.TrimSpace(m[1])
+		body := m[2]
+		// Strip a trailing newline if the fence had one.
+		body = strings.TrimPrefix(body, "\n")
+
+		lang := ""
+		filename := ""
+		if info != "" {
+			// Info string can be "go", "go main.go", "go title", etc.
+			parts := strings.Fields(info)
+			lang = strings.ToLower(parts[0])
+			for _, p := range parts[1:] {
+				// Looks like a filename if it has an extension or a slash.
+				if filepath.Ext(p) != "" || strings.Contains(p, "/") {
+					filename = p
+					break
+				}
+			}
+		}
+		out = append(out, codeBlock{Lang: lang, Filename: filename, Body: body})
+	}
+	return out
+}
+
+// guessFilenameForBlock produces a best-effort filename when the fence info
+// string didn't name one. Heuristics:
+//  1. If stepDescription references a specific file (e.g. "fix script.js"),
+//     and the block's language matches that file's extension, use it.
+//  2. Otherwise, derive from the language: go→main.go, js→index.js, py→main.py.
+//  3. Unknown language → "" (caller should skip — ambiguous).
+func guessFilenameForBlock(block codeBlock, stepDescription string) string {
+	// (1) Look for a file reference in the step description.
+	descFile := extractFilenameFromDescription(stepDescription)
+	if descFile != "" {
+		descExt := strings.ToLower(filepath.Ext(descFile))
+		// Map extension to expected fence language.
+		wantLang := ""
+		switch descExt {
+		case ".go":
+			wantLang = "go"
+		case ".js", ".mjs", ".cjs":
+			wantLang = "js"
+		case ".jsx":
+			wantLang = "jsx"
+		case ".ts":
+			wantLang = "ts"
+		case ".tsx":
+			wantLang = "tsx"
+		case ".py":
+			wantLang = "py"
+		case ".rb":
+			wantLang = "ruby"
+		case ".rs":
+			wantLang = "rust"
+		case ".html", ".htm":
+			wantLang = "html"
+		case ".css":
+			wantLang = "css"
+		case ".sh", ".bash":
+			wantLang = "sh"
+		case ".java":
+			wantLang = "java"
+		case ".cpp", ".cc", ".cxx":
+			wantLang = "cpp"
+		case ".c":
+			wantLang = "c"
+		}
+		if wantLang == block.Lang || (wantLang == "" && block.Lang == "") {
+			return descFile
+		}
+	}
+
+	// (2) Default per language.
+	switch block.Lang {
+	case "go":
+		return "main.go"
+	case "js", "javascript":
+		return "index.js"
+	case "jsx":
+		return "Component.jsx"
+	case "ts", "typescript":
+		return "index.ts"
+	case "tsx":
+		return "Component.tsx"
+	case "py", "python":
+		return "main.py"
+	case "rb", "ruby":
+		return "main.rb"
+	case "rs", "rust":
+		return "main.rs"
+	case "html":
+		return "index.html"
+	case "css":
+		return "styles.css"
+	case "sh", "bash":
+		return "script.sh"
+	case "java":
+		return "Main.java"
+	case "cpp", "c++":
+		return "main.cpp"
+	case "c":
+		return "main.c"
+	default:
+		return ""
+	}
+}
+
+// descFileRe finds filename-like tokens in a step description. Matches
+// tokens with a known code extension.
+var descFileRe = regexp.MustCompile(`\b([a-zA-Z0-9_./-]+\.(?:go|js|mjs|cjs|jsx|ts|tsx|py|rb|rs|html?|css|sh|bash|java|cpp|cc|cxx|c))\b`)
+
+func extractFilenameFromDescription(desc string) string {
+	m := descFileRe.FindStringSubmatch(desc)
+	if m == nil {
+		return ""
+	}
+	// Take just the basename — full paths are scary to auto-write.
+	return filepath.Base(m[1])
+}
+
+// synthesizeFileWriteCall builds a kyoci.ToolCall that invokes the file tool
+// to write `content` to `filename`. Used by the interceptor to execute on
+// the model's behalf when the model emitted markdown instead of calling
+// the tool directly.
+func synthesizeFileWriteCall(filename, content string) kyoci.ToolCall {
+	args := map[string]interface{}{
+		"operation": "write",
+		"path":      filename,
+		"content":   content,
+	}
+	argsBytes, _ := json.Marshal(args)
+	return kyoci.ToolCall{
+		ID:        fmt.Sprintf("interceptor_%d", time.Now().UnixNano()),
+		Name:      "file",
+		Arguments: string(argsBytes),
+	}
+}
+
+// interceptCodeBlocks is the worker-facing entry point. It scans modelOutput
+// for fenced code blocks, decides which ones we can confidently auto-write,
+// and returns the synthesized file:write tool calls.
+//
+// Decision rules (conservative — false positives are worse than false negatives
+// because we'd overwrite real files):
+//  1. Block has an explicit filename in the fence info string → write it.
+//  2. Block has a language AND we can guess a filename from the step
+//     description (e.g. description mentions "script.js" + block is ```js)
+//     → write it.
+//  3. Block has a language but no filename hint → write to the
+//     language-default filename ONLY if there's exactly ONE block (ambiguous
+//     otherwise — multiple unnamed blocks likely aren't all "main.go").
+//  4. Block has no language → skip (could be anything).
+//
+// Returns nil when no blocks can be confidently written. The worker then
+// falls through to its normal handling (evidence nudge or accept).
+func interceptCodeBlocks(modelOutput, stepDescription string) []kyoci.ToolCall {
+	blocks := extractCodeBlocks(modelOutput)
+	if len(blocks) == 0 {
+		return nil
+	}
+	var out []kyoci.ToolCall
+	for _, b := range blocks {
+		if b.Lang == "" {
+			continue
+		}
+		filename := b.Filename
+		if filename == "" {
+			filename = guessFilenameForBlock(b, stepDescription)
+		}
+		if filename == "" {
+			continue
+		}
+		// Bail on multi-block outputs where we're guessing filenames — too
+		// likely we'd overwrite main.go with the wrong content.
+		if filename == defaultFilenameForLang(b.Lang) && len(blocks) > 1 {
+			continue
+		}
+		out = append(out, synthesizeFileWriteCall(filename, b.Body))
+	}
+	return out
+}
+
+// defaultFilenameForLang returns the conventional default filename for a
+// language, or "" if there isn't one. Used by interceptCodeBlocks to detect
+// the "multiple unnamed blocks all guessed to main.go" ambiguity.
+func defaultFilenameForLang(lang string) string {
+	switch lang {
+	case "go":
+		return "main.go"
+	case "js", "javascript":
+		return "index.js"
+	case "ts", "typescript":
+		return "index.ts"
+	case "py", "python":
+		return "main.py"
+	case "html":
+		return "index.html"
+	case "css":
+		return "styles.css"
+	}
+	return ""
 }

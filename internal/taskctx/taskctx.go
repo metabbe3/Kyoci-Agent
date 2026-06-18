@@ -16,6 +16,7 @@ type ctxKey int
 
 const (
 	keyWorkspace ctxKey = iota
+	keySandbox
 )
 
 // WithWorkspace returns a copy of ctx carrying the per-task workspace dir.
@@ -38,6 +39,39 @@ func WorkspaceFromCtx(ctx context.Context) string {
 		return ""
 	}
 	if v, ok := ctx.Value(keyWorkspace).(string); ok {
+		return v
+	}
+	return ""
+}
+
+// WithSandbox returns a copy of ctx carrying a hard filesystem ceiling.
+// When set, the file/glob/grep tools refuse any path that resolves outside
+// `root` (via filepath.Rel — `..` escape attempts are rejected). Empty root
+// clears any previously-set sandbox.
+//
+// Use this to combat the 8B "wandering agent" failure mode: when a task
+// targets a specific subdir (e.g. /projects/calculator/), the orchestrator
+// sets the sandbox so the agent physically cannot read sibling dirs and
+// waste its limited attention window.
+//
+// Sandbox is distinct from workspace: workspace is the default working dir
+// (informational), sandbox is a hard ceiling (enforced). A task can have
+// both, either, or neither.
+func WithSandbox(ctx context.Context, root string) context.Context {
+	if root == "" {
+		return context.WithValue(ctx, keySandbox, "")
+	}
+	return context.WithValue(ctx, keySandbox, root)
+}
+
+// SandboxFromCtx returns the hard sandbox root set by WithSandbox, or "" if
+// none is set. Tools should call this and reject paths escaping the root.
+// Empty string = no sandbox enforced (current behavior).
+func SandboxFromCtx(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	if v, ok := ctx.Value(keySandbox).(string); ok {
 		return v
 	}
 	return ""
