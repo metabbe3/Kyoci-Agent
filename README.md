@@ -168,6 +168,51 @@ The `delegation` tool has a special prefix: any task starting with `explore:` or
 
 This mirrors Claude Code's `Task` tool pattern. Use it via natural delegation: *"delegation explore: find all uses of context.Background()"* or programmatically by prefixing any delegation goal.
 
+### Agent activity tree (live visibility)
+
+When an agent runs, the chat UI shows a **live activity tree** instead of a loading spinner — the same Claude-Code-style visibility that prompted this work:
+
+```
+Running 1 task…
+▸ Fix the calculator script.js · 4 tool uses · 1.2k tokens ●
+  ⎿  06:01:22  Reading projects/calculator/script.js
+  ⎿  06:01:23  grep TODO in ./src
+  ⎿  06:01:24  Writing projects/calculator/script.js
+```
+
+- **Inline in chat bubbles** while streaming; collapses to a summary line above the final answer on completion (click ▸ to re-expand).
+- **Persistent Live Activity panel** at `/activity` aggregates every running agent across the app — open it in a second tab to monitor multi-agent runs.
+- Backend emits structured `ActivityEvent`s (`task_start`, `task_progress`, `sub_activity`, `task_complete`) at every chokepoint: pipeline start, per-step worker, per-tool-call `act()`, worker done, delegation start/done. A process-wide `ActivityBroker` fans them out to all subscribers via `/api/dashboard/activity` SSE.
+
+Compact-by-default, expandable to verbose (every tool call with timestamp). Status pills: ● running (pulsing), ✓ done, ✗ error.
+
+### 8B-model optimization strategies
+
+Local small models (8B-class: gemma-4-e4b, qwen-coder:14b) have three failure modes the framework now compensates for. All three are additive and config-gated — no regression to large-model behavior.
+
+**Strategy 1 — Directory sandbox (fixes "wandering agent")**
+
+When a task references a specific subdir (e.g. `/projects/calculator/`), the orchestrator locks the `file`/`glob`/`grep` tools to that subtree via `taskctx.WithSandbox`. The agent physically cannot drift into sibling dirs and burn its 4–8k effective attention window scanning irrelevant files. Detection is automatic — `detectTaskSandbox()` scans the task string for path-like tokens. Tasks with no path target keep full access.
+
+**Strategy 2 — Markdown code-block interceptor (fixes "chatty developer")**
+
+8B models are heavily fine-tuned as chat assistants. When they solve a problem, their strongest instinct is to output the solution as Markdown code blocks instead of calling `file:write`. The interceptor catches this:
+
+1. Worker sees a tool-call-free response with fenced code blocks
+2. `extractCodeBlocks()` parses them; `interceptCodeBlocks()` pairs each block with a filename (from the fence info string, or matched against files mentioned in the task description by language extension)
+3. Synthesized `file:write` calls execute on the model's behalf
+4. Activity event emitted for audit ("Interceptor: auto-writing 2 file(s) from planner output")
+
+Conservative: skips ambiguous cases (multiple unnamed blocks, no description hints) — false positives would overwrite real files. The planner-salvage path (below) also fires the interceptor.
+
+**Strategy 3 — Sprint mode (fixes "loop fatigue")**
+
+For pure-reasoning tasks (explain, summarize, classify) the 8B model is more reliable as a pure function than as an autonomous agent. `EnableSprint: true` on AgentConfig bypasses the orchestrator pipeline and the ReAct loop — `executeSprint()` makes ONE LLM call, no tools, no chat history carried forward. The planner can mark individual steps with `tool_hint="sprint"` to use sprint for pure-reasoning sub-tasks within a larger orchestration.
+
+### Planner graceful fallback (no more chat 500)
+
+When the 8B model emits prose + code blocks instead of the expected JSON step array, `parseOrchSteps` used to fail and propagate as an HTTP 500. Now `salvagePlannerOutput(err)` recovers the raw planner output from the error and uses it as the task result when it has substance (≥1 code block OR ≥200 chars of prose). The interceptor fires on the salvaged output, so embedded file writes still land. The chat returns 200 with the model's actual answer — and an activity event (`Planner fallback — Model answered directly instead of planning`) explains what happened.
+
 ---
 
 ## HITL fallback
@@ -256,9 +301,9 @@ cmd/
   hitlctl/     # operator CLI for HelpRequest stream
   mcp-mock/    # test helper for L3 benchmark
 internal/
-  agent/           # 4-phase orchestrated pipeline + ReAct loop
+  agent/           # 4-phase orchestrated pipeline + ReAct loop + sprint mode
   config/          # YAML + env-override loader
-  dashboard/       # embedded SPA + REST API for the dashboard
+  dashboard/       # embedded SPA + REST API + ActivityBroker (activity tree SSE)
   gateway/         # Telegram bot gateway
   hardware/        # system telemetry panel
   hitl/            # gRPC Hub + Server + HITLHook
