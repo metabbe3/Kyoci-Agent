@@ -327,6 +327,35 @@ Call %s NOW. Example first calls:
 After the tool returns, report findings based ONLY on what you observed.`, hint, hint)
 }
 
+// VerificationRetryNudge is the sharper, file-specific retry prompt used when
+// verifyFileCreation fails. Unlike WorkerEvidenceNudge (generic "call any
+// tool"), this one names the EXACT files the model already claimed to create
+// in its prose. The model can't pretend it doesn't know what to write — we
+// quoted its own claims back at it.
+//
+// Used by verifyArtifacts' retry loop after a [VERIFICATION FAILED] tag.
+// Each file in `claimed` should appear verbatim in the prompt so the model
+// sees an itemized checklist.
+func VerificationRetryNudge(claimed []string) string {
+	if len(claimed) == 0 {
+		// Defensive — caller should check before invoking.
+		return "Your previous turn claimed file creation but no file:write tool calls were made. Call file:write for each file you intended to create, with the FULL file content as the \"content\" parameter."
+	}
+	var b strings.Builder
+	b.WriteString("VERIFICATION FAILED. Your previous turn CLAIMED to create these files:\n\n")
+	for _, f := range claimed {
+		fmt.Fprintf(&b, "  - %s\n", f)
+	}
+	b.WriteString("\nBut you made ZERO file:write tool calls. The files DO NOT exist on disk.\n\n")
+	b.WriteString("You MUST now call file:write for EACH file listed above. Rules:\n")
+	b.WriteString("  1. Emit ONE file:write tool call per file. Do NOT batch them.\n")
+	b.WriteString("  2. Each call's \"content\" parameter must contain the FULL file content, not a placeholder.\n")
+	b.WriteString("  3. Do NOT describe the files. Do NOT summarize them. Do NOT explain them. ONLY emit the tool calls.\n")
+	b.WriteString("  4. After all files are written, you may add ONE short sentence confirming completion.\n\n")
+	b.WriteString(fmt.Sprintf("Start with %s NOW.", claimed[0]))
+	return b.String()
+}
+
 // SynthesizerPrompt asks the model to compose the final user-facing answer
 // from the per-step worker results. The synthesizer has no tools — it can
 // only write prose from evidence already gathered.

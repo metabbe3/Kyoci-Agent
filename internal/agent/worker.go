@@ -347,9 +347,103 @@ func (w *orchestratedWorker) reactLoop(ctx context.Context, messages []kyoci.Mes
 // verifyArtifacts runs the file-creation verification gate for file-producing
 // steps. It delegates to verifyFileCreation (the test-seen name) so the gate's
 // behavior and its direct tests stay anchored on one implementation.
+//
+// RETRY LOOP: when verification fails because the model emitted prose claiming
+// file creation but didn't call file:write, this method re-invokes the worker
+// with a sharper, file-specific nudge (VerificationRetryNudge). The model
+// sees its own claimed filenames and the verification failure, then has another
+// chance to actually emit the tool calls. Cap at 2 retries so we don't burn
+// the worker's iteration budget on a model that won't comply.
 func (w *orchestratedWorker) verifyArtifacts(ctx context.Context, messages []kyoci.Message, out string) string {
 	if !isFileCreationStep(w.step.Description) {
 		return out
 	}
-	return w.agent.verifyFileCreation(ctx, w.step, messages, out)
+	tagged := w.agent.verifyFileCreation(ctx, w.step, messages, out)
+	if !strings.HasPrefix(tagged, "[VERIFICATION FAILED") {
+		return tagged
+	}
+
+	// Failure: claimed files but didn't write them. Try to recover.
+	const maxRetries = 2
+	currentMessages := messages
+	currentOut := out
+	currentTagged := tagged
+	seenClaims := map[string]bool{} // bail if the same set repeats
+
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		claimed := extractClaimedFiles(currentOut)
+		if len(claimed) == 0 {
+			break // can't sharpen without targets
+		}
+
+		// Bail if the model claimed the same set last time (stuck).
+		claimKey := strings.Join(claimed, ",")
+		if seenClaims[claimKey] {
+			w.agent.logger.Warn("orchestrator: verification retry — same claims as prior attempt; giving up",
+				"step", w.step.ID, "claims", claimed)
+			break
+		}
+		seenClaims[claimKey] = true
+
+		w.agent.logger.Info("orchestrator: verification retry",
+			"step", w.step.ID, "attempt", attempt+1, "claimed_count", len(claimed))
+		w.agent.emitActivity(kyoci.ActivityEvent{
+			Type:     kyoci.ActivityLog,
+			TaskID:   fmt.Sprintf("step-%d", w.step.ID),
+			TaskName: w.step.Description,
+			Detail:   fmt.Sprintf("Verification retry %d/%d: model claimed %d file(s) in prose but didn't call file:write — sharpening prompt", attempt+1, maxRetries, len(claimed)),
+		})
+
+		// Append the failure context as a tool message (so the model sees
+		// the [VERIFICATION FAILED] tag) + the sharper nudge as a user turn.
+		retryMessages := append(append([]kyoci.Message{}, currentMessages...),
+			kyoci.Message{
+				Role:    kyoci.RoleTool,
+				Content: currentTagged,
+				Name:    "verification",
+			},
+			kyoci.Message{
+				Role:    kyoci.RoleUser,
+				Content: VerificationRetryNudge(claimed),
+			},
+		)
+
+		// Re-filter tools (deterministic — returns the same set as the original
+		// worker invocation) and re-run the loop.
+		toolDefs, _ := w.filterToolsForStep()
+		retryOut, err := w.reactLoop(ctx, retryMessages, toolDefs)
+		if err != nil {
+			w.agent.logger.Warn("orchestrator: verification retry failed (reactLoop error)",
+				"step", w.step.ID, "attempt", attempt+1, "err", err)
+			break
+		}
+
+		retryTagged := w.agent.verifyFileCreation(ctx, w.step, retryMessages, retryOut)
+		if !strings.HasPrefix(retryTagged, "[VERIFICATION FAILED") {
+			w.agent.logger.Info("orchestrator: verification retry succeeded",
+				"step", w.step.ID, "attempt", attempt+1)
+			w.agent.emitActivity(kyoci.ActivityEvent{
+				Type:     kyoci.ActivityLog,
+				TaskID:   fmt.Sprintf("step-%d", w.step.ID),
+				TaskName: w.step.Description,
+				Detail:   fmt.Sprintf("Verification retry %d succeeded — files now on disk", attempt+1),
+			})
+			return retryTagged
+		}
+
+		// Still failing — extract any newly-claimed files and try once more.
+		currentMessages = retryMessages
+		currentOut = retryOut
+		currentTagged = retryTagged
+	}
+
+	w.agent.logger.Warn("orchestrator: verification retries exhausted",
+		"step", w.step.ID, "retries", maxRetries)
+	w.agent.emitActivity(kyoci.ActivityEvent{
+		Type:     kyoci.ActivityLog,
+		TaskID:   fmt.Sprintf("step-%d", w.step.ID),
+		TaskName: w.step.Description,
+		Detail:   fmt.Sprintf("Verification failed after %d retries — accepting failure", maxRetries),
+	})
+	return currentTagged
 }

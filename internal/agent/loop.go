@@ -1146,8 +1146,10 @@ func guessFilenameForBlock(block codeBlock, stepDescription string) string {
 }
 
 // descFileRe finds filename-like tokens in a step description. Matches
-// tokens with a known code extension.
-var descFileRe = regexp.MustCompile(`\b([a-zA-Z0-9_./-]+\.(?:go|js|mjs|cjs|jsx|ts|tsx|py|rb|rs|html?|css|sh|bash|java|cpp|cc|cxx|c))\b`)
+// tokens with a known code OR config extension. Config extensions added
+// so the verification retry can pick up claims like "package.json was
+// created" — without these, the worker gives up on Node.js-style tasks.
+var descFileRe = regexp.MustCompile(`\b([a-zA-Z0-9_./-]+\.(?:go|js|mjs|cjs|jsx|ts|tsx|py|rb|rs|html?|css|scss|sass|less|sh|bash|zsh|java|kt|swift|cpp|cc|cxx|c|cs|scala|php|vue|svelte|json|toml|yaml|yml|lock|ini|env|xml|md|markdown|txt|csv|sql))\b`)
 
 func extractFilenameFromDescription(desc string) string {
 	m := descFileRe.FindStringSubmatch(desc)

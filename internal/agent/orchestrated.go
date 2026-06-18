@@ -888,6 +888,44 @@ func extractWrittenPaths(messages []kyoci.Message) []string {
 	return out
 }
 
+// extractClaimedFiles scans free-form prose for filename-like tokens the model
+// CLAIMED to create (without necessarily calling file:write). Used by the
+// verification retry loop: when verifyFileCreation fails because no file:write
+// was called but the prose mentions specific files, we feed those filenames
+// back to the model in a sharper nudge.
+//
+// Uses descFileRe (defined in loop.go, shared with the interceptor) so the
+// set of recognized extensions stays consistent. Returns basenames only —
+// claims like "projects/calculator/package.json" become "package.json" so the
+// retry nudge stays concise. Deduped, ordered by first mention.
+//
+// Conservative: matches any filename-looking token with a code or config
+// extension. False positives (e.g. a filename mentioned as a comparison
+// reference) are filtered downstream by the retry loop's 2-attempt cap.
+func extractClaimedFiles(text string) []string {
+	if text == "" {
+		return nil
+	}
+	matches := descFileRe.FindAllString(text, -1)
+	if matches == nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, m := range matches {
+		base := m
+		if idx := strings.LastIndex(m, "/"); idx >= 0 {
+			base = m[idx+1:]
+		}
+		if base == "" || seen[base] {
+			continue
+		}
+		seen[base] = true
+		out = append(out, base)
+	}
+	return out
+}
+
 // mustJSON marshals v to a JSON string. Only used for internal tool-call
 // argument synthesis where the shape is fixed and marshal cannot fail.
 func mustJSON(v any) string {
