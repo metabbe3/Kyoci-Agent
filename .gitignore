@@ -35,7 +35,6 @@ data/
 # Node.js (portfolio-site, tooling)
 # =============================================================================
 node_modules/
-package-lock.json
 
 # =============================================================================
 # Local-only / archive / unrelated worktrees
