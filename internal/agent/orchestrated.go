@@ -560,7 +560,7 @@ func (a *Agent) planTask(ctx context.Context, task string) ([]OrchStep, error) {
 			{Role: kyoci.RoleUser, Content: userPrompt},
 		},
 		Temperature: 0.2, // planning wants determinism
-		MaxTokens:   4096, // reasoning models (Gemma) burn ~2k tokens on CoT before the JSON
+		MaxTokens:   8192, // qwen3.5 burns ~4k on <think> reasoning before the JSON; 4k cap returned empty
 		Model:       a.config.Model,
 		// NB: no Tools — the planner can only plan.
 		ToolChoice: "none", // belt-and-suspenders: never emit tool_calls
@@ -1266,7 +1266,7 @@ func (a *Agent) synthesize(ctx context.Context, task string, steps []OrchStep, r
 			{Role: kyoci.RoleUser, Content: prompt},
 		},
 		Temperature: 0.3,
-		MaxTokens:   4096, // reasoning models (Gemma) burn tokens on CoT before the prose
+		MaxTokens:   8192, // qwen3.5 burns ~4k on <think> reasoning; 4k cap was producing empty synthesizer output
 		Model:       a.config.Model,
 		// NB: no Tools — synthesizer can only write prose.
 		ToolChoice: "none", // belt-and-suspenders: never emit tool_calls
