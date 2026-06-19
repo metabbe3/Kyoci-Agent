@@ -143,7 +143,10 @@ func TestRunWorker_InjectsL3ContextIntoSystemPrompt(t *testing.T) {
 }
 
 // TestRunWorker_EmptyInjectionLeavesSystemPromptUnchanged verifies that an empty
-// injection does not alter the worker system prompt.
+// injection does not alter the worker system prompt beyond the file-creation
+// directive (which is now also in the system prompt for file-creation steps).
+// Uses a NON-file-creation step so the directive stays out, isolating the test
+// to just the L3 injection path.
 func TestRunWorker_EmptyInjectionLeavesSystemPromptUnchanged(t *testing.T) {
 	seq := &sequencerProvider{
 		name: "mock",
@@ -163,8 +166,10 @@ func TestRunWorker_EmptyInjectionLeavesSystemPromptUnchanged(t *testing.T) {
 	a := createTestAgent(cfg, seq)
 	a.SetContextInjector(fakeInjector{content: ""})
 
-	step := OrchStep{ID: 1, Description: "write the file", ToolHint: "file"}
-	if _, err := a.runWorker(context.Background(), "write a Go API", step, map[int]string{}); err != nil {
+	// "explore" → not a file-creation step, so directive stays out. With empty
+	// L3 injection the system prompt must be EXACTLY WorkerSystemPrompt.
+	step := OrchStep{ID: 1, Description: "explore the codebase", ToolHint: "file"}
+	if _, err := a.runWorker(context.Background(), "investigate", step, map[int]string{}); err != nil {
 		t.Fatalf("runWorker failed: %v", err)
 	}
 	sysMsg := seq.captured[0].Messages[0].Content

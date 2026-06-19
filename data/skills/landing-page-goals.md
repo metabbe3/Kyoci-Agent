@@ -1,0 +1,1 @@
+Primary goals include Sign-up (lead generation), Download (asset acquisition/magnet), and Contact (direct inquiry). Conversion paths are defined by the specific page's objective.

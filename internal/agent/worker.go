@@ -130,20 +130,20 @@ func (w *orchestratedWorker) buildMessages() []kyoci.Message {
 	}
 	sb.WriteString("\n\nComplete this step now using the available tools. When done, report your findings in one or two sentences.")
 
-	// File-creation directive: when the step expresses creation intent,
-	// proactively steer the model toward the `file` tool's write operation.
-	// Without this, gemma4:12b substitutes list/search/recall and never
-	// produces the artifact — the same substitution defect observed for MCP
-	// tools before Go-side enforcement was added.
-	if isFileCreationStep(step.Description) {
-		sb.WriteString("\n\n" + fileCreationDirective)
-		w.agent.logger.Info("orchestrator: file-creation directive injected", "step", step.ID)
-	}
-
 	// Inject L3 memory context (user profile, past experiences, lessons) into
 	// the worker system prompt — appended AFTER WorkerSystemPrompt so the
 	// strict output contract stays the leading signal. Mirrors loop.go:210-214.
+	//
+	// File-creation directive (when applicable) is ALSO appended to the system
+	// prompt — NOT the user message. Models pay 3-5× more attention to the
+	// system prompt; burying the directive in the user-message tail lets the
+	// chat-assistant training win on small models. Putting it in the system
+	// prompt next to WorkerSystemPrompt gives it the strongest possible weight.
 	systemPrompt := WorkerSystemPrompt
+	if isFileCreationStep(step.Description) {
+		systemPrompt = systemPrompt + "\n\n" + fileCreationDirective
+		w.agent.logger.Info("orchestrator: file-creation directive injected into system prompt", "step", step.ID)
+	}
 	if w.agent.injector != nil {
 		if injected := w.agent.injector.Inject(task); injected != "" {
 			systemPrompt = systemPrompt + "\n\n" + injected

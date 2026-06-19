@@ -1,0 +1,1 @@
+Analyze the provided source material to identify the core message, unique selling propositions (USPs), and target audience for the landing pages.

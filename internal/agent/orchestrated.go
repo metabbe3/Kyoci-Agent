@@ -454,14 +454,34 @@ func isVerifyOrQAStep(desc string) bool {
 	return false
 }
 
-// fileCreationDirective is the proactive nudge injected into a file-creation
-// step's user content. It tells the model concretely which tool op to use so
-// it doesn't reach for list/search/recall.
-const fileCreationDirective = `FILE-CREATION DIRECTIVE: This step requires the 'file' tool with operation=write to produce a new artifact.
-- Do NOT use operation=list, operation=search, operation=read, or memory_recall as your final action — those gather context, they do not create the file.
-- When ready, emit a single file tool call shaped like: {"operation":"write","path":"<the target path>","content":"<the full file contents>"}.
-- For large files (>100 lines), write in chunks: first operation=write the opening section, then operation=append subsequent sections. Each chunk must be complete on its own.
-- Only after the write returns successfully, report what you created in one or two sentences.`
+// fileCreationDirective is the EXECUTION-MODE preamble injected for file-
+// creation steps. Lives in the SYSTEM prompt (not the user message) so the
+// model pays full attention to it. Behavioral, not informational — names
+// the exact antipatterns small models exhibit and forbids them explicitly.
+const fileCreationDirective = `CRITICAL EXECUTION MODE — FILE CREATION
+
+You are NOT a chat assistant. You are an EXECUTION agent. Your output is
+evaluated by whether files appear on disk, not by whether you described them.
+
+ANTI-PATTERNS — if your response starts with any of these, you have FAILED:
+- "I'll create..." / "Let me..." / "Here is..." / "I'll write..."
+- "The file should contain..." / "This will..."
+- Markdown code blocks (triple-backtick) — those are NOT file writes
+- Any prose BEFORE your first tool call
+
+REQUIRED BEHAVIOR:
+1. Your VERY FIRST output must be a tool_calls array — not prose.
+2. Call the 'file' tool with operation=write. Parameters:
+   - path: the target file path
+   - content: the FULL file body as a string parameter, NOT a code block
+3. After the tool returns successfully, you may add ONE sentence confirming
+   creation. That's the ONLY prose allowed.
+4. For large files (>100 lines), chain: first call operation=write with the
+   opening section, then operation=append subsequent sections. Each chunk
+   must be complete on its own.
+
+If you describe a file instead of writing it, the system will detect the gap
+and force a retry — wasting 30 seconds. Don't make it waste that time.`
 
 
 // planTask calls the LLM once with PlannerPrompt (no tools) and parses the

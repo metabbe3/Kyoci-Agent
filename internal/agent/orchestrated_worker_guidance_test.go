@@ -106,9 +106,10 @@ func TestIsFileCreationStep_FalseForReadAndExploreSteps(t *testing.T) {
 }
 
 // TestRunWorker_InjectsFileCreationDirective verifies that when a step expresses
-// creation intent, the worker's user message includes an explicit directive to
-// use the `file` tool with operation=write — steering the model away from the
-// list/search/recall substitution observed in the benchmark.
+// creation intent, the worker's SYSTEM prompt includes the EXECUTION-MODE
+// directive — steering the model away from prose-first descriptions and toward
+// file:write tool calls. The directive lives in the system prompt (not the
+// user message) because models pay 3-5× more attention to system content.
 func TestRunWorker_InjectsFileCreationDirective(t *testing.T) {
 	seq := &sequencerProvider{
 		name: "mock",
@@ -127,9 +128,9 @@ func TestRunWorker_InjectsFileCreationDirective(t *testing.T) {
 	if len(seq.captured) == 0 {
 		t.Fatalf("no LLM requests captured")
 	}
-	userMsg := seq.captured[0].Messages[1].Content
-	if !strings.Contains(strings.ToLower(userMsg), "operation") || !strings.Contains(strings.ToLower(userMsg), "write") {
-		t.Errorf("file-creation directive missing from worker user message;\nuserMsg:\n%s", userMsg)
+	sysMsg := seq.captured[0].Messages[0].Content
+	if !strings.Contains(sysMsg, "EXECUTION MODE") {
+		t.Errorf("file-creation directive missing from worker SYSTEM prompt;\nsysMsg tail:\n%s", sysMsg[len(sysMsg)-min(400, len(sysMsg)):])
 	}
 }
 
@@ -150,10 +151,8 @@ func TestRunWorker_NoDirectiveForNonCreationSteps(t *testing.T) {
 	if _, err := a.runWorker(context.Background(), "explore", step, map[int]string{}); err != nil {
 		t.Fatalf("runWorker failed: %v", err)
 	}
-	userMsg := seq.captured[0].Messages[1].Content
-	// The directive references the file-write operation; its sentinel phrase
-	// must NOT appear for a pure-list step.
-	if strings.Contains(strings.ToLower(userMsg), "file-creation directive") {
-		t.Errorf("file-creation directive leaked into a non-creation step;\nuserMsg:\n%s", userMsg)
+	sysMsg := seq.captured[0].Messages[0].Content
+	if strings.Contains(sysMsg, "EXECUTION MODE") {
+		t.Errorf("file-creation directive leaked into a non-creation step SYSTEM prompt;\nsysMsg:\n%s", sysMsg)
 	}
 }
