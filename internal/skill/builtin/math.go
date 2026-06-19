@@ -26,16 +26,24 @@ func NewMathSkill() *MathSkill {
 			[]string{"calculate", "math", "what is", "compute", "+", "-", "*", "/", "%", "sqrt", "^"},
 		),
 	}
-	// Pattern to match math expressions: numbers, operators, parentheses, sqrt, ^
-	skill.exprPattern = regexp.MustCompile(`(?i)calculate\s+(.+)|what\s+is\s+(.+)|sqrt\s+(\d+(?:\.\d+)?)|(\d+(?:\.\d+)?)\s*([\+\-\*\/\^])\s*(\d+(?:\.\d+)?)(?:\s*([\+\-\*\/\^])\s*(\d+(?:\.\d+)?))?|(\d+(?:\.\d+)?)\s*%\s*(?:of\s+)?(\d+(?:\.\d+)?)`)
+	// Pattern to match math expressions: "calculate ...", sqrt <num>, a binary
+	// op like "2+2" / "2^3", or a percentage "10% of 50". Note: a bare "what is
+	// X" is intentionally NOT matched — it fires on almost any factual question
+	// ("what is the capital of france") and hijacks unrelated tasks. "what is
+	// 2+2" still matches via the binary-op alternative below.
+	skill.exprPattern = regexp.MustCompile(`(?i)calculate\s+(.+)|sqrt\s+(\d+(?:\.\d+)?)|(\d+(?:\.\d+)?)\s*([\+\-\*\/\^])\s*(\d+(?:\.\d+)?)(?:\s*([\+\-\*\/\^])\s*(\d+(?:\.\d+)?))?|(\d+(?:\.\d+)?)\s*%\s*(?:of\s+)?(\d+(?:\.\d+)?)`)
 	return skill
 }
 
 // Match checks if the query is a math calculation.
 func (s *MathSkill) Match(query string) bool {
 	queryLower := strings.ToLower(query)
-	// Check for keywords
-	for _, keyword := range []string{"calculate", "what is", "sqrt", "% of", "^", "math"} {
+	// Check for keywords. "what is" and bare "^" were intentionally removed:
+	// they are substrings that fire on huge numbers of unrelated queries
+	// ("what is the capital of france") and would hijack them via the skill
+	// fast path. Real math intent is carried by "calculate"/"math"/"sqrt"/"% of"
+	// or by an expression matched by exprPattern below.
+	for _, keyword := range []string{"calculate", "sqrt", "% of", "math"} {
 		if strings.Contains(queryLower, keyword) {
 			return true
 		}

@@ -25,10 +25,18 @@ func NewDiffSkill() *DiffSkill {
 	}
 }
 
-// Match checks if the query references diffing.
+// Match checks if the query references diffing AND carries one of the input
+// separators Execute requires (' vs ', ' --- ', ' // '). Requiring the
+// separator prevents the skill from hijacking generic "compare X and Y"
+// questions (which have no separator and would make Execute error out).
 func (s *DiffSkill) Match(query string) bool {
 	queryLower := strings.ToLower(query)
-	return strings.Contains(queryLower, "diff") || strings.Contains(queryLower, "compare")
+	if !strings.Contains(queryLower, "diff") && !strings.Contains(queryLower, "compare") {
+		return false
+	}
+	return strings.Contains(queryLower, " vs ") ||
+		strings.Contains(queryLower, " --- ") ||
+		strings.Contains(queryLower, " // ")
 }
 
 // Execute splits the query on a separator and produces an LCS-based diff.

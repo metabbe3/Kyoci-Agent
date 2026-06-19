@@ -88,3 +88,16 @@ func ClassifyWithAgents(task string, defs []agentdef.AgentDef) kyoci.RoleType {
 	}
 	return kyoci.RoleType(name)
 }
+
+// currentAgentDefs returns the package-global agent set under a read lock.
+// Callers that only need to read the loaded defs (e.g. provenance scoring in
+// autoresolve.go) should use this rather than touching defaultDefs directly.
+// The returned slice shares its backing array; readers must not mutate it.
+// SetDefaultAgentDefs replaces the variable wholesale under a write lock, so
+// concurrent readers may observe the previous set — acceptable since agents are
+// loaded once at boot.
+func currentAgentDefs() []agentdef.AgentDef {
+	defaultDefsMu.RLock()
+	defer defaultDefsMu.RUnlock()
+	return defaultDefs
+}

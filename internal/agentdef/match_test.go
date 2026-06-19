@@ -42,6 +42,39 @@ func TestMatchScore_CaseInsensitive(t *testing.T) {
 	}
 }
 
+func TestMatchScore_NegationDiscountsHit(t *testing.T) {
+	// "html"/"css" are keywords (+1); "react" is an anchor (+3).
+	def := AgentDef{Triggers: TriggerSpec{
+		Keywords: []string{"html", "css"},
+		Anchors:  []string{"react"},
+	}}
+	cases := []struct {
+		task string
+		want int
+	}{
+		// Negated occurrences don't count (the original "no HTML" misroute bug).
+		{"build a CLI, no html", 0},
+		{"make it not html", 0},
+		{"style it without css", 0},
+		{"avoid html entirely", 0},
+		{"don't use css", 0},
+		{"don't write html", 0},
+		{"avoid generating html", 0},
+		{"never produce css", 0},
+		{"use vue, not react", 0}, // negated anchor
+		// Positive forms still count.
+		{"write some html", 1},
+		{"build a react app", 3},
+		// Mixed: negated html + positive react → only react counts.
+		{"no html but use react", 3},
+	}
+	for _, tc := range cases {
+		if got := MatchScore(def, tc.task); got != tc.want {
+			t.Errorf("task %q: got %d, want %d", tc.task, got, tc.want)
+		}
+	}
+}
+
 func TestMatchScore_Regex(t *testing.T) {
 	def := AgentDef{
 		Triggers: TriggerSpec{

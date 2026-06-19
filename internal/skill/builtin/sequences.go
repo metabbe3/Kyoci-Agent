@@ -113,12 +113,19 @@ func (s *RangeSkill) Match(q string) bool {
 }
 
 func (s *RangeSkill) Execute(_ context.Context, q string) (string, error) {
-	payload := extractPayload(q)
-	if payload == "" {
-		// Fall back to everything after the word "range".
-		payload = stripVerb(q, "range")
+	payload := strings.TrimSpace(extractPayload(q))
+	// extractPayload may return the whole query (no colon) or partially strip a
+	// generic prefix like "generate " and leave the "range" token behind. Strip
+	// any leading range-verb so "generate range 1 to 3" / "range from 1 to 5"
+	// collapse to their numbers.
+	low := strings.ToLower(payload)
+	for _, v := range []string{"generate range from", "range from", "generate range", "number range", "range"} {
+		if strings.HasPrefix(low, v) {
+			payload = strings.TrimSpace(payload[len(v):])
+			low = strings.ToLower(payload)
+			break
+		}
 	}
-	payload = strings.TrimSpace(payload)
 	// Strip connector words from "range from 1 to 10" → "1 10".
 	payload = strings.ReplaceAll(payload, " to ", " ")
 	payload = strings.ReplaceAll(payload, " from ", " ")

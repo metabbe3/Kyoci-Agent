@@ -23,9 +23,12 @@ bin/
 *.test
 
 # =============================================================================
-# Runtime data (SQLite DBs, skill bundles, logs, task workspaces)
+# Runtime data (SQLite DBs, logs, task workspaces). Authored prompt-skills
+# under data/skills/ ARE tracked (shipped knowledge for the 8B agents);
+# everything else in data/ is runtime/local and stays ignored.
 # =============================================================================
-data/
+/data/*
+!/data/skills/
 logs/
 tasks/
 *.db

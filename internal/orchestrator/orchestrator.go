@@ -64,6 +64,14 @@ type Orchestrator struct {
 	started          bool
 	shutdownChan     chan struct{}
 
+	// routing configures the deterministic task→agent resolver wrapper
+	// (exact-hash cache + provenance logging). See autoresolve.go.
+	routing config.RoutingConfig
+
+	// routeCache memoizes resolved task→role decisions for O(1) repeat-task
+	// routing. Initialized in New(); nil-safe (resolveAgent checks).
+	routeCache *routeCache
+
 	// hitlCfg holds the optional Human-In-The-Loop retry configuration. Set
 	// via SetHITL from main.go when the operator wires up the gRPC server.
 	// When nil (or MaxRetries=0), tasks execute single-shot as before.
@@ -246,6 +254,8 @@ func New(cfg *config.Config) (*Orchestrator, error) {
 		tracer:           tracer,
 		logger:           logger,
 		shutdownChan:     make(chan struct{}),
+		routing:          cfg.Routing,
+		routeCache:       newRouteCache(cfg.Routing.CacheMaxEntries),
 	}
 
 	// Wire delegation callback (tool already registered above)
@@ -296,9 +306,11 @@ func (o *Orchestrator) Execute(ctx context.Context, task string, roleType kyoci.
 
 	o.logger.Info("executing task", "task", task, "role_type", roleType.String())
 
-	// Auto-detect role if not specified
+	// Auto-detect role if not specified. resolveAgent preserves ClassifyRole's
+	// deterministic decision exactly and adds an exact-hash cache + a
+	// provenance log line (see autoresolve.go).
 	if roleType == kyoci.RoleCustom {
-		roleType = ClassifyRole(task)
+		roleType = o.resolveAgent(ctx, task)
 		o.logger.Info("auto-detected role", "detected_role", roleType.String())
 		span.SetAttribute("detected_role", roleType.String())
 	}
@@ -550,9 +562,11 @@ func (o *Orchestrator) ExecuteStream(ctx context.Context, task string, roleType 
 
 	o.logger.Info("executing streaming task", "task", task, "role_type", roleType.String())
 
-	// Auto-detect role if not specified
+	// Auto-detect role if not specified. resolveAgent preserves ClassifyRole's
+	// deterministic decision exactly and adds an exact-hash cache + a
+	// provenance log line (see autoresolve.go).
 	if roleType == kyoci.RoleCustom {
-		roleType = ClassifyRole(task)
+		roleType = o.resolveAgent(ctx, task)
 		o.logger.Info("auto-detected role", "detected_role", roleType.String())
 		span.SetAttribute("detected_role", roleType.String())
 	}

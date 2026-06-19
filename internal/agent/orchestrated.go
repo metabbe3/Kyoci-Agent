@@ -41,8 +41,9 @@ type OrchestratorConfig struct {
 	// Enabled routes Execute() through executeOrchestrated() instead of the
 	// legacy ReAct loop or thinking state machine.
 	Enabled bool
-	// MaxSteps caps the planner output. Default 6 — beyond this the plan is
-	// usually over-decomposed and the synthesizer struggles to use it all.
+	// MaxSteps caps the planner output. Default 60 — high so big tasks decompose
+	// fully; injected SETUP/VERIFY/QA steps are carved out of the cap, and
+	// circuit breakers guard against runaway loops.
 	MaxSteps int
 	// MaxParallel bounds concurrent worker goroutines. Default 3, matching
 	// the existing delegation.go pattern.
@@ -65,7 +66,7 @@ type OrchestratorConfig struct {
 func DefaultOrchestratorConfig() OrchestratorConfig {
 	return OrchestratorConfig{
 		Enabled:             false, // opt-in via config/default.yaml
-		MaxSteps:            6,
+		MaxSteps:            60,
 		MaxParallel:         3,
 		WorkerMaxIterations: 8,
 		WorkerMaxToolCalls:  8,
@@ -380,7 +381,7 @@ func toolNames(defs []kyoci.ToolDefinition) []string {
 
 // fileCreationVerbs are the action words that signal a step produces an
 // artifact (as opposed to reading or exploring one).
-var fileCreationVerbs = []string{"create", "write", "generate", "initialize", "implement", "build", "add"}
+var fileCreationVerbs = []string{"create", "write", "generate", "initialize", "implement", "build", "add", "make"}
 
 // fileExtensionOrFileNoun is true when the description mentions a concrete file
 // target (a filename, a path with a dot extension, or the word "file"). This
@@ -407,19 +408,50 @@ func descriptionMentionsFileTarget(desc string) bool {
 // intent: a creation verb AND a file target. This is the trigger for the
 // worker file-write directive. gemma4:12b otherwise substitutes list/search/
 // recall for write — the same behavioral defect observed for MCP tools.
+// fileCreationVerbRe matches a creation verb as a WHOLE WORD (case-insensitive),
+// built from fileCreationVerbs. Whole-word matching prevents "implement" from
+// matching inside "implementation" or "create" inside "created" — the over-match
+// that previously misclassified read/understand steps as file-creation.
+var fileCreationVerbRe = regexp.MustCompile(`(?i)\b(` + strings.Join(fileCreationVerbs, "|") + `)\b`)
+
+// readOnlyStepStartRe matches a step that BEGINS with a read/analysis verb.
+// Such a step is investigation, never creation — even if a creation verb appears
+// later (e.g. "Read user_service.go to understand the implementation").
+var readOnlyStepStartRe = regexp.MustCompile(`(?i)^\s*(read|review|search|analyze|analyse|investigate|understand|locate|find|list|explore|examine|audit|inspect)\b`)
+
 func isFileCreationStep(desc string) bool {
-	low := strings.ToLower(desc)
-	creates := false
-	for _, v := range fileCreationVerbs {
-		if strings.Contains(low, v) {
-			creates = true
-			break
-		}
+	low := strings.ToLower(strings.TrimSpace(desc))
+	if readOnlyStepStartRe.MatchString(low) {
+		return false
 	}
-	if !creates {
+	if !fileCreationVerbRe.MatchString(low) {
 		return false
 	}
 	return descriptionMentionsFileTarget(desc)
+}
+
+// isQAStep reports whether a plan step is the independent QA review phase —
+// detected by the "QA:" description prefix (the ensureSDLCSteps convention) or
+// the word "independently". QA steps route to QAWorker (an isolated sub-agent).
+func isQAStep(desc string) bool {
+	low := strings.ToLower(strings.TrimSpace(desc))
+	return strings.HasPrefix(low, "qa:") || strings.Contains(low, "independently")
+}
+
+// isVerifyOrQAStep reports whether a step is the VERIFY or QA phase — where a
+// build/test result must be enforced honestly by the Go-side gate
+// (tagBuildFailureIfNeeded in worker.go).
+func isVerifyOrQAStep(desc string) bool {
+	if isQAStep(desc) {
+		return true
+	}
+	low := strings.ToLower(desc)
+	for _, k := range verifyKeywords {
+		if strings.Contains(low, k) {
+			return true
+		}
+	}
+	return false
 }
 
 // fileCreationDirective is the proactive nudge injected into a file-creation
@@ -492,7 +524,122 @@ func (a *Agent) planTask(ctx context.Context, task string) ([]OrchStep, error) {
 		steps = steps[:cfg.MaxSteps]
 	}
 
+	// SDLC backstop: guarantee a SETUP step (install deps) runs first and a
+	// VERIFY step (build/test) runs last for code-creation tasks — even when the
+	// model forgot. See ensureSDLCSteps.
+	steps = a.ensureSDLCSteps(task, steps, cfg.MaxSteps)
+
 	return steps, nil
+}
+
+// setupKeywords / verifyKeywords detect when the planner already produced a
+// setup (install-deps) or verify (build/test) step, so the backstop below does
+// not duplicate it.
+var setupKeywords = []string{"setup", "install", "npm install", "go mod", "pip install", "yarn", "dependencies"}
+var verifyKeywords = []string{"verify", "build", "test", "lint", "npm run build", "go test", "go build", "compile"}
+var qaKeywords = []string{"qa:", "independently", "independent review"}
+
+// ensureSDLCSteps guarantees SDLC structure for code-creation tasks: a SETUP
+// step (id 0, install deps) that every other step depends on, and a VERIFY step
+// (build/test) that depends on every other step. SETUP runs first and VERIFY
+// last under the topological dispatcher (executeWorkers/allDepsDone). No-op for
+// non-code tasks and when the planner already emitted a matching step. The
+// result is truncated to maxSteps.
+func (a *Agent) ensureSDLCSteps(task string, steps []OrchStep, maxSteps int) []OrchStep {
+	if len(steps) == 0 {
+		return steps
+	}
+	// Gate on whether the PLAN contains file-creation steps — more reliable than
+	// the raw task string, which may not name a file target (e.g. "make a React
+	// app" has no ".tsx", but its steps will).
+	codeTask := false
+	for _, s := range steps {
+		if isFileCreationStep(s.Description) {
+			codeTask = true
+			break
+		}
+	}
+	if !codeTask {
+		return steps
+	}
+	if !anyStepMatches(steps, setupKeywords) {
+		const setupID = -1 // sentinel: the planner emits positive IDs, so -1 never collides
+		setup := OrchStep{
+			ID:          setupID,
+			Description: "SETUP: create the project manifest (package.json/go.mod/requirements.txt) and install dependencies (npm install / go mod download / pip install).",
+			ToolHint:    "terminal",
+		}
+		// Every other step waits for setup so dependencies are installed first.
+		for i := range steps {
+			steps[i].DependsOn = appendUniqueInt(steps[i].DependsOn, setupID)
+		}
+		steps = append([]OrchStep{setup}, steps...)
+		a.logger.Info("orchestrator: injected SETUP step (install deps)", "id", setupID)
+	}
+	if !anyStepMatches(steps, verifyKeywords) {
+		allIDs := make([]int, 0, len(steps))
+		for _, s := range steps {
+			allIDs = appendUniqueInt(allIDs, s.ID)
+		}
+		verify := OrchStep{
+			ID:          nextStepID(steps),
+			Description: "VERIFY: run the project build/tests (npm run build / go build ./... / go test ./...) and report pass/fail with the real output.",
+			ToolHint:    "terminal",
+			DependsOn:   allIDs,
+		}
+		steps = append(steps, verify)
+		a.logger.Info("orchestrator: injected VERIFY step (build/test) as the last step")
+	}
+	if !anyStepMatches(steps, qaKeywords) {
+		allIDs := make([]int, 0, len(steps))
+		for _, s := range steps {
+			allIDs = appendUniqueInt(allIDs, s.ID)
+		}
+		qa := OrchStep{
+			ID:          nextStepID(steps),
+			Description: "QA: independently re-run the build/tests and inspect the generated code for bugs. Report PASS or FAIL with specific findings (file:line).",
+			ToolHint:    "terminal",
+			DependsOn:   allIDs, // runs LAST — after VERIFY
+		}
+		steps = append(steps, qa)
+		a.logger.Info("orchestrator: injected QA step (independent review) as the last step")
+	}
+	// No post-injection truncation: planTask already capped the PLANNER output to
+	// maxSteps before calling ensureSDLCSteps. The injected SETUP/VERIFY/QA steps
+	// are carved out of the cap so they always survive (truncating here would
+	// silently drop the tail-appended VERIFY/QA on large plans).
+	return steps
+}
+
+func anyStepMatches(steps []OrchStep, keywords []string) bool {
+	for _, s := range steps {
+		low := strings.ToLower(s.Description)
+		for _, k := range keywords {
+			if strings.Contains(low, k) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func appendUniqueInt(xs []int, v int) []int {
+	for _, x := range xs {
+		if x == v {
+			return xs
+		}
+	}
+	return append(xs, v)
+}
+
+func nextStepID(steps []OrchStep) int {
+	max := 0
+	for _, s := range steps {
+		if s.ID > max {
+			max = s.ID
+		}
+	}
+	return max + 1
 }
 
 // salvagePlannerOutput inspects a planner error and, when the underlying raw
@@ -673,6 +820,8 @@ func (a *Agent) executeWorkers(ctx context.Context, task string, steps []OrchSte
 	sem := make(chan struct{}, cfg.MaxParallel)
 	done := make(map[int]bool)
 	var mu sync.Mutex
+	const maxConsecutiveStalls = 3 // circuit breaker: stop the task after this many stalled steps in a row
+	consecutiveStalls := 0
 
 	for len(done) < len(steps) {
 		// Build the next eligible batch: steps not yet done whose deps are all done.
@@ -739,8 +888,39 @@ func (a *Agent) executeWorkers(ctx context.Context, task string, steps []OrchSte
 			})
 		}
 		_ = g.Wait()
+
+		// Circuit breaker: too many stalled steps in a row (empty / error /
+		// verification-failed / no-evidence results) → stop the task instead of
+		// churning through the rest of the plan. Reset on any successful step.
+		for _, step := range batch {
+			if isStalledResult(results[step.ID]) {
+				consecutiveStalls++
+			} else {
+				consecutiveStalls = 0
+			}
+			if consecutiveStalls >= maxConsecutiveStalls {
+				a.logger.Warn("orchestrator: circuit breaker — too many consecutive stalled steps, stopping task",
+					"consecutive", consecutiveStalls)
+				return results, nil
+			}
+		}
 	}
 	return results, nil
+}
+
+// isStalledResult reports whether a worker result indicates no real progress:
+// empty, an error tag, a verification failure, or a worker circuit-breaker stop.
+func isStalledResult(out string) bool {
+	out = strings.TrimSpace(out)
+	if out == "" {
+		return true
+	}
+	for _, tag := range []string{"[worker error", "[VERIFICATION FAILED", "[no tool evidence", "[circuit breaker", "[step "} {
+		if strings.HasPrefix(out, tag) {
+			return true
+		}
+	}
+	return false
 }
 
 // allDepsDone reports whether every step.DependsOn ID is present in done.

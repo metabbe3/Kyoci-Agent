@@ -28,14 +28,16 @@ import (
 // to stripVerb for each of the given verb/alias candidates. Quotes are removed.
 // Returns "" when no operand is present.
 func extractPathOperand(q string, verbs ...string) string {
-	// Primary: colon-delimited payload. extractPayload already trims and returns
-	// "" if nothing follows the colon.
-	if p := quoteStripped(extractPayload(q)); p != "" {
-		return p
+	q = strings.TrimSpace(q)
+	// Colon form ("verb: operand") is authoritative: an empty operand after the
+	// colon means empty — do NOT fall back to verb-stripping, which would return
+	// the whole verb and defeat every skill's empty-input guard.
+	if strings.Contains(q, ":") {
+		return quoteStripped(extractPayload(q))
 	}
-	// Fallback: strip any of the verb aliases and use what remains.
+	// No colon: strip any of the verb aliases and use what remains.
 	for _, v := range verbs {
-		if p := quoteStripped(stripVerb(q, v)); p != "" && p != ":" {
+		if p := quoteStripped(stripVerb(q, v)); p != "" && p != ":" && p != q {
 			return p
 		}
 	}
@@ -126,16 +128,7 @@ func (s *FilepathDirSkill) Match(q string) bool {
 }
 
 func (s *FilepathDirSkill) Execute(_ context.Context, q string) (string, error) {
-	in := quoteStripped(stripVerb(q, "filepath dir"))
-	if in == "" {
-		in = quoteStripped(stripVerb(q, "directory of"))
-	}
-	if in == "" {
-		in = quoteStripped(stripVerb(q, "dirname"))
-	}
-	if in == "" {
-		in = quoteStripped(extractPayload(q))
-	}
+	in := extractPathOperand(q, "filepath dir", "directory of", "dirname")
 	if in == "" {
 		return "", fmt.Errorf("no path given")
 	}
@@ -161,16 +154,7 @@ func (s *FilepathBaseSkill) Match(q string) bool {
 }
 
 func (s *FilepathBaseSkill) Execute(_ context.Context, q string) (string, error) {
-	in := quoteStripped(stripVerb(q, "filepath base"))
-	if in == "" {
-		in = quoteStripped(stripVerb(q, "basename"))
-	}
-	if in == "" {
-		in = quoteStripped(stripVerb(q, "base name of"))
-	}
-	if in == "" {
-		in = quoteStripped(extractPayload(q))
-	}
+	in := extractPathOperand(q, "filepath base", "basename", "base name of")
 	if in == "" {
 		return "", fmt.Errorf("no path given")
 	}
@@ -196,16 +180,7 @@ func (s *FilepathExtSkill) Match(q string) bool {
 }
 
 func (s *FilepathExtSkill) Execute(_ context.Context, q string) (string, error) {
-	in := quoteStripped(stripVerb(q, "filepath ext"))
-	if in == "" {
-		in = quoteStripped(stripVerb(q, "extension of"))
-	}
-	if in == "" {
-		in = quoteStripped(stripVerb(q, "file extension"))
-	}
-	if in == "" {
-		in = quoteStripped(extractPayload(q))
-	}
+	in := extractPathOperand(q, "filepath ext", "extension of", "file extension")
 	if in == "" {
 		return "", fmt.Errorf("no path given")
 	}
@@ -235,16 +210,7 @@ func (s *FilepathStemSkill) Match(q string) bool {
 }
 
 func (s *FilepathStemSkill) Execute(_ context.Context, q string) (string, error) {
-	in := quoteStripped(stripVerb(q, "filepath stem"))
-	if in == "" {
-		in = quoteStripped(stripVerb(q, "stem of"))
-	}
-	if in == "" {
-		in = quoteStripped(stripVerb(q, "filename without extension"))
-	}
-	if in == "" {
-		in = quoteStripped(extractPayload(q))
-	}
+	in := extractPathOperand(q, "filepath stem", "stem of", "filename without extension")
 	if in == "" {
 		return "", fmt.Errorf("no path given")
 	}
@@ -273,16 +239,7 @@ func (s *MIMEFromExtSkill) Match(q string) bool {
 }
 
 func (s *MIMEFromExtSkill) Execute(_ context.Context, q string) (string, error) {
-	in := quoteStripped(stripVerb(q, "mime from ext"))
-	if in == "" {
-		in = quoteStripped(stripVerb(q, "mime type for"))
-	}
-	if in == "" {
-		in = quoteStripped(stripVerb(q, "content type for"))
-	}
-	if in == "" {
-		in = quoteStripped(extractPayload(q))
-	}
+	in := extractPathOperand(q, "mime from ext", "mime type for", "content type for")
 	if in == "" {
 		return "", fmt.Errorf("no extension given")
 	}
@@ -342,16 +299,7 @@ func (s *ExtFromMIMESkill) Match(q string) bool {
 }
 
 func (s *ExtFromMIMESkill) Execute(_ context.Context, q string) (string, error) {
-	in := quoteStripped(stripVerb(q, "ext from mime"))
-	if in == "" {
-		in = quoteStripped(stripVerb(q, "extension for mime"))
-	}
-	if in == "" {
-		in = quoteStripped(stripVerb(q, "extensions for mime"))
-	}
-	if in == "" {
-		in = quoteStripped(extractPayload(q))
-	}
+	in := extractPathOperand(q, "ext from mime", "extension for mime", "extensions for mime")
 	if in == "" {
 		return "", fmt.Errorf("no MIME type given")
 	}
@@ -386,16 +334,7 @@ func (s *PathIsAbsoluteSkill) Match(q string) bool {
 }
 
 func (s *PathIsAbsoluteSkill) Execute(_ context.Context, q string) (string, error) {
-	in := quoteStripped(stripVerb(q, "path is absolute"))
-	if in == "" {
-		in = quoteStripped(stripVerb(q, "is absolute path"))
-	}
-	if in == "" {
-		in = quoteStripped(stripVerb(q, "absolute path check"))
-	}
-	if in == "" {
-		in = quoteStripped(extractPayload(q))
-	}
+	in := extractPathOperand(q, "path is absolute", "is absolute path", "absolute path check")
 	if in == "" {
 		return "", fmt.Errorf("no path given")
 	}
@@ -424,16 +363,7 @@ func (s *PathIsRelativeSkill) Match(q string) bool {
 }
 
 func (s *PathIsRelativeSkill) Execute(_ context.Context, q string) (string, error) {
-	in := quoteStripped(stripVerb(q, "path is relative"))
-	if in == "" {
-		in = quoteStripped(stripVerb(q, "is relative path"))
-	}
-	if in == "" {
-		in = quoteStripped(stripVerb(q, "relative path check"))
-	}
-	if in == "" {
-		in = quoteStripped(extractPayload(q))
-	}
+	in := extractPathOperand(q, "path is relative", "is relative path", "relative path check")
 	if in == "" {
 		return "", fmt.Errorf("no path given")
 	}

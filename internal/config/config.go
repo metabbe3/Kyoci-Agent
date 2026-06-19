@@ -365,6 +365,11 @@ type Config struct {
 	// (markdown workflow bundles injected into the system prompt per task).
 	PromptSkill PromptSkillConfig `yaml:"prompt_skills"`
 
+	// Routing holds configuration for the deterministic task→agent resolver
+	// wrapper (exact-hash cache + provenance logging). See
+	// internal/orchestrator/autoresolve.go.
+	Routing RoutingConfig `yaml:"routing"`
+
 	// HITL holds Human-In-The-Loop configuration. When Enabled, the server
 	// starts a gRPC server (port HITL.Port) that operator clients subscribe
 	// to. The orchestrator emits HelpRequests when it exhausts its retry
@@ -415,6 +420,28 @@ type PromptSkillConfig struct {
 	// MaxTotalChars caps the total injected body bytes across all matched
 	// skills for one task. Default: 12000
 	MaxTotalChars int `yaml:"max_total_chars"`
+}
+
+// RoutingConfig configures the deterministic task→agent resolver that wraps
+// the keyword/anchor/regex classifier (agentdef.BestMatch). The wrapper adds an
+// exact-hash cache and provenance logging without changing the routing
+// decision itself — when both CacheEnabled and LogProvenance are false,
+// resolveAgent behaves identically to the pre-existing ClassifyRole call.
+type RoutingConfig struct {
+	// CacheEnabled controls the exact-hash route cache. When true, repeat
+	// tasks resolve in O(1) without re-scoring. Default: true.
+	CacheEnabled bool `yaml:"cache_enabled" env:"KYOCI_ROUTING_CACHE_ENABLED"`
+
+	// CacheMaxEntries bounds the exact-hash route cache. When exceeded, one
+	// arbitrary entry is evicted (best-effort). Default: 1024.
+	CacheMaxEntries int `yaml:"cache_max_entries" env:"KYOCI_ROUTING_CACHE_MAX_ENTRIES"`
+
+	// LogProvenance emits a structured "routing decision" log line per task
+	// (chosen role, top specialist + score, abstain flag, cache hit). This is
+	// the instrumentation needed to evaluate routing quality and decide
+	// whether future tiers (LLM selector / agent synthesis) are warranted.
+	// Default: true.
+	LogProvenance bool `yaml:"log_provenance" env:"KYOCI_ROUTING_LOG_PROVENANCE"`
 }
 
 // MCPServerConfig holds configuration for a single MCP server.
@@ -573,7 +600,7 @@ func Default() *Config {
 				// Default OFF here; config/default.yaml flips it ON so the
 				// orchestrator-worker pipeline is the shipping execution path.
 				Enabled:             false,
-				MaxSteps:            6,
+				MaxSteps:            60,
 				MaxParallel:         3,
 				WorkerMaxIterations: 8,
 				WorkerMaxToolCalls:  8,
@@ -585,6 +612,11 @@ func Default() *Config {
 			Dir:              "data/skills",
 			MaxSkillsPerTask: 4,
 			MaxTotalChars:    12000,
+		},
+		Routing: RoutingConfig{
+			CacheEnabled:    true,
+			CacheMaxEntries: 1024,
+			LogProvenance:   true,
 		},
 		HITL: HITLConfig{
 			Enabled:        false,
@@ -774,6 +806,11 @@ func (c *Config) Validate() error {
 		if c.PromptSkill.MaxTotalChars <= 0 {
 			return apperr.Newf("config.prompt_skills_chars", apperr.KindInvalid, "prompt_skills.max_total_chars must be positive when enabled")
 		}
+	}
+
+	// Validate routing config
+	if c.Routing.CacheEnabled && c.Routing.CacheMaxEntries <= 0 {
+		return apperr.Newf("config.routing_cache_max_entries", apperr.KindInvalid, "routing.cache_max_entries must be positive when cache enabled")
 	}
 
 	return nil
@@ -1000,6 +1037,20 @@ func (c *Config) applyEnvOverrides() error {
 	if v := os.Getenv("KYOCI_PROMPT_SKILLS_MAX_CHARS"); v != "" {
 		c.PromptSkill.MaxTotalChars = parseIntEnv(v, c.PromptSkill.MaxTotalChars)
 		slog.Info("Override applied", "setting", "prompt_skills.max_total_chars", "value", c.PromptSkill.MaxTotalChars)
+	}
+
+	// Routing config overrides
+	if v := os.Getenv("KYOCI_ROUTING_CACHE_ENABLED"); v != "" {
+		c.Routing.CacheEnabled = parseBoolEnv(v)
+		slog.Info("Override applied", "setting", "routing.cache_enabled", "value", c.Routing.CacheEnabled)
+	}
+	if v := os.Getenv("KYOCI_ROUTING_CACHE_MAX_ENTRIES"); v != "" {
+		c.Routing.CacheMaxEntries = parseIntEnv(v, c.Routing.CacheMaxEntries)
+		slog.Info("Override applied", "setting", "routing.cache_max_entries", "value", c.Routing.CacheMaxEntries)
+	}
+	if v := os.Getenv("KYOCI_ROUTING_LOG_PROVENANCE"); v != "" {
+		c.Routing.LogProvenance = parseBoolEnv(v)
+		slog.Info("Override applied", "setting", "routing.log_provenance", "value", c.Routing.LogProvenance)
 	}
 
 	return nil

@@ -276,14 +276,20 @@ func (r *RoleRegistry) createRoleAgent(
 		)
 	}
 
+	// Share the global, fully-populated skill registry with every agent. The
+	// underlying *kyoci.SkillRegistry is goroutine-safe and read-only after
+	// RegisterBuiltin runs at boot, so one shared instance is safe across all
+	// agents and avoids copying ~180 skills per role. This is what makes the
+	// zero-AI skill fast path (agent loop) and the planner's tool_hint="skill"
+	// path actually fire — previously each agent got an empty registry and no
+	// skills were ever available, so the fast path could never match.
+	// IMPORTANT: every agent, worker, and explore-clone holds this SAME pointer,
+	// so it MUST stay read-only after boot — never call a.skills.Register(...)
+	// through the agent port, or you mutate every concurrent agent's skills.
+	// Keep skill registration to RegisterBuiltin at init only.
 	skillRegistry := kyoci.NewSkillRegistry()
 	if r.skillReg != nil {
-		skillInfos := r.skillReg.List()
-		for _, info := range skillInfos {
-			// Note: We can't get the actual skill from info, so we'd need to extend the skill API
-			// For now, skills will need to be registered separately
-			r.logger.Debug("skill available", "name", info.Name)
-		}
+		skillRegistry = r.skillReg.Kyoci()
 	}
 
 	// Create agent

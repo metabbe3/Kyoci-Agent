@@ -36,10 +36,17 @@ func PrepareWorkspace(cfg *config.Config, taskID string) (string, error) {
 		return "", nil
 	}
 	dir := filepath.Join(cfg.Tasks.Dir, taskID, "deliverable")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	// Absolutize so the `file` tool's join and the `terminal` tool's default
+	// workdir converge on one root regardless of the process cwd (cfg.Tasks.Dir
+	// defaults to the relative "tasks").
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
 		return "", fmt.Errorf("prepare workspace %s: %w", dir, err)
 	}
-	return dir, nil
+	if err := os.MkdirAll(absDir, 0o755); err != nil {
+		return "", fmt.Errorf("prepare workspace %s: %w", absDir, err)
+	}
+	return absDir, nil
 }
 
 // TaskDir returns the per-task root folder (<cfg.Tasks.Dir>/<task_id>) without
@@ -49,7 +56,11 @@ func TaskDir(cfg *config.Config, taskID string) string {
 	if cfg == nil || cfg.Tasks.Dir == "" || taskID == "" {
 		return ""
 	}
-	return filepath.Join(cfg.Tasks.Dir, taskID)
+	dir := filepath.Join(cfg.Tasks.Dir, taskID)
+	if abs, err := filepath.Abs(dir); err == nil {
+		return abs
+	}
+	return dir
 }
 
 // CleanupIfEmpty removes the per-task folder when it contains no deliverable

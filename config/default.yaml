@@ -243,7 +243,7 @@ providers:
 agent:
     orchestration:
         enabled: true # DEFAULT pipeline — one-job-per-call
-        max_steps: 6 # planner output cap; over-this = over-decomposed
+        max_steps: 60 # high cap so big tasks decompose fully; circuit breakers guard against loops
         max_parallel: 3 # concurrent worker goroutines
         worker_max_iterations: 8 # per-worker ReAct iteration cap
         worker_max_tool_calls: 8 # per-worker tool budget
@@ -294,3 +294,16 @@ filesystem_skills:
     sandbox_root: "."              # resolved at startup; project_* skills refuse paths outside this root
     max_walk_files: 50000          # safety cap on directory walks
     max_file_size: "10MB"          # skip individual files larger than this during walks
+
+# ── Routing ────────────────────────────────────────────
+# Deterministic task→agent resolver wrapper around the keyword/anchor/regex
+# classifier (agentdef.BestMatch). Adds an exact-hash cache + provenance
+# logging WITHOUT changing the routing decision — when both are disabled,
+# resolveAgent behaves identically to the old ClassifyRole call. See
+# internal/orchestrator/autoresolve.go.
+# Overrides: KYOCI_ROUTING_CACHE_ENABLED, KYOCI_ROUTING_CACHE_MAX_ENTRIES,
+#   KYOCI_ROUTING_LOG_PROVENANCE
+routing:
+    cache_enabled: true        # memoize task→role for O(1) repeat-task routing
+    cache_max_entries: 1024    # evict one arbitrary entry when exceeded (best-effort)
+    log_provenance: true       # emit a "routing decision" log line per task (chosen role, top specialist, abstain)

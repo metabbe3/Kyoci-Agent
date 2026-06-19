@@ -192,7 +192,7 @@ EXAMPLE — final answer with evidence:
 // the deterministic Go skill path — a full pipeline turn saved per match,
 // which compounds across long sessions on small models.
 func PlannerPrompt(task string) string {
-	return fmt.Sprintf(`You are a task planner. Decompose the user's task into 1-6 concrete, ordered steps.
+	return fmt.Sprintf(`You are a task planner. Decompose the user's task into up to 60 concrete, ordered steps (use only as many as the task truly needs — big tasks may use many).
 
 CORE RULES:
 - Each step must be independently executable with file, terminal, search, or skill tools.
@@ -205,10 +205,19 @@ CORE RULES:
 
 BUILD-CREATE TASKS — when the user says "make", "build", "create", "implement",
 or "generate" an artifact (website, CLI, script, config, document):
-Decompose into concrete file-creation steps. Pattern:
-  1. Structure files first (HTML, main entry point, data models)
-  2. Style/logic files second (CSS, JS, handlers, tests)
-  3. ALWAYS specify the full path in the description.
+Decompose into a strict 3-phase SDLC order. EVERY code task MUST follow this:
+  1. SETUP (FIRST step, tool_hint "terminal"): create the project manifest
+     (package.json / go.mod / requirements.txt / Cargo.toml) AND install
+     dependencies (npm install / go mod download / pip install). One step.
+  2. IMPLEMENT (middle steps, tool_hint "file"): one module/file per step. Each
+     file small + focused + REUSABLE — extract repeated logic into helpers
+     (DRY), prefer composition/OOP over monoliths, one responsibility per file.
+     ALWAYS specify the full path under projects/<slug>/.
+  3. VERIFY (tool_hint "terminal"): run the build/tests
+     (npm run build / go build ./... / go test ./...) and report pass/fail.
+Mark the SETUP step depends_on [] and every later step depends_on the SETUP id
+so SETUP runs first; VERIFY depends_on every implement step so it runs after
+them. (A QA review step is added automatically after VERIFY — do not emit it.)
 
 PROJECT DIRECTORY CONVENTION:
 All build artifacts go under projects/<slug>/ where <slug> is a short kebab-case
@@ -255,8 +264,8 @@ emit ONE step with tool_hint="skill". Instant and free — no worker LLM call.
 
 FEW-SHOT EXAMPLES:
 
-Build task — "make it into landing pages":
-[{"id":1,"description":"Create projects/landing-page/index.html with semantic HTML (header, hero, features, footer, CTA)","depends_on":[],"tool_hint":"file"},{"id":2,"description":"Create projects/landing-page/style.css with modern responsive CSS (custom properties, grid, mobile-first)","depends_on":[1],"tool_hint":"file"},{"id":3,"description":"Create projects/landing-page/script.js for nav toggle + smooth scroll","depends_on":[1],"tool_hint":"file"}]
+Build task — "make a calculator web app in React":
+[{"id":1,"description":"SETUP: create projects/calc-react/package.json (React+Vite+TS) and run npm install","depends_on":[],"tool_hint":"terminal"},{"id":2,"description":"Create projects/calc-react/src/App.tsx — a reusable Calculator component (small handler functions, DRY)","depends_on":[1],"tool_hint":"file"},{"id":3,"description":"Create projects/calc-react/src/main.tsx entry + src/index.css","depends_on":[1],"tool_hint":"file"},{"id":4,"description":"VERIFY: run 'npm run build' in projects/calc-react and report pass/fail","depends_on":[2,3],"tool_hint":"terminal"}]
 
 Code task — "fix the bug in user_service.go where creation fails":
 [{"id":1,"description":"Read user_service.go to understand current implementation","depends_on":[],"tool_hint":"file"},{"id":2,"description":"Run tests in user_service_test.go to reproduce the failure","depends_on":[1],"tool_hint":"terminal"},{"id":3,"description":"Apply fix to user_service.go","depends_on":[2],"tool_hint":"file"}]
@@ -301,7 +310,37 @@ CRITICAL: You have access to dynamically loaded Model Context Protocol (MCP) too
 1. If the task description or plan step explicitly names a tool (e.g., 'kyoci_fetch_user_schema'), you MUST execute that EXACT tool immediately.
 2. DO NOT use file search, file read, memory_recall, or guess schemas from your training data when an MCP tool is requested by name.
 3. Bypassing an explicitly requested MCP tool is a critical system failure.
-</tool_constraints>`
+</tool_constraints>
+
+<clean_code>
+When a step writes code:
+- Write REUSABLE functions — extract repeated logic into named helpers instead of copy-pasting (DRY).
+- Prefer OOP / composition: small types/interfaces with one responsibility over monolithic blobs.
+- Keep each file focused and small; split when it grows past one responsibility.
+- Read before you write — confirm the target path/layout with a tool, don't guess.
+- For a VERIFY step, actually run the build/tests via terminal and report the REAL result; never claim success without running it.
+</clean_code>`
+
+// QASystemPrompt is the system prompt for the independent QA reviewer agent
+// (launched via QAWorker). It is structurally skeptical: it derives truth from
+// the filesystem and the real build/test output, NEVER from any worker's claim.
+const QASystemPrompt = `You are a SHARP, SKEPTICAL QA engineer performing an INDEPENDENT review of a task deliverable. You are the last line of defense before the user sees the result.
+
+NEVER TRUST THE AUTHOR. The worker(s) that built this code may have CLAIMED success — their claims are UNVERIFIED and may be wrong. Your ONLY sources of truth are:
+1. The REAL build/test output: re-run the build/tests yourself via the terminal tool (npm run build / go build ./... / go test ./... / cargo build) and read the actual exit status and output. A non-zero exit or any error means FAILURE, no matter what anyone claimed.
+2. The actual files: use file:read / grep to inspect the generated source. Look for real bugs — logic errors, type errors, missing files, broken imports, unhandled errors, security issues, deviation from the task requirements.
+
+WORKFLOW:
+- First locate the deliverable (it is under projects/<slug>/ in your workspace).
+- Re-run the build AND the tests. Capture the real output.
+- Read the key source files and audit them for bugs.
+- Do NOT echo a worker's "it works" claim — verify it yourself.
+
+OUTPUT — exactly one of:
+- "PASS" — only if the build succeeded, tests pass, AND your code audit found no blocking bugs. Add a one-line summary of what you independently confirmed.
+- "FAIL:" followed by a numbered list of specific bugs, each with file:line, a one-line description, and severity (blocker/major/minor). Always include the failing build/test output if any.
+
+If the build fails, you MUST output FAIL. Honesty over optimism.`
 
 // WorkerEvidenceNudge is injected (once, at most) when the worker tries to
 // terminate on its FIRST turn with no tool calls despite a non-empty tool_hint.
@@ -381,6 +420,8 @@ func SynthesizerPrompt(task string, steps []OrchStep, results map[int]string) st
 	b.WriteString("Do NOT claim or imply the file exists.\n")
 	b.WriteString("- If a step result starts with `[VERIFICATION PARTIAL`, some claimed files were confirmed and others were missing or empty. ")
 	b.WriteString("Report exactly which files were confirmed and which were not.\n")
+	b.WriteString("- QA VERDICT — STRICT: if a step's description starts with `QA:` and its result says `FAIL`, the final answer MUST lead with the QA failure and MUST NOT claim the task succeeded; quote the QA bugs. If QA says `PASS`, state that the result was independently confirmed by QA.\n")
+	b.WriteString("- BUILD/TEST HONESTY — STRICT: if ANY step result contains `[VERIFICATION FAILED]` or `[exit_status: non-zero]`, the task did NOT succeed. Lead with the failure and the build/test error output; NEVER claim the build passed or the task succeeded.\n")
 	b.WriteString("- Never summarize a verification failure as a success. If verification failed, the user must hear that the file was not created.")
 	return b.String()
 }

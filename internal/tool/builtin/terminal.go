@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/metabbe3/Kyoci-Agent/internal/taskctx"
 	"github.com/metabbe3/Kyoci-Agent/pkg"
 )
 
@@ -87,9 +88,11 @@ func (t *TerminalTool) Execute(ctx context.Context, params map[string]interface{
 		}
 	}
 
-	// Extract workdir (optional)
-	workdir := ""
-	if workdirVal, ok := params["workdir"].(string); ok {
+	// Default the working directory to the per-task workspace — the same root
+	// the `file` tool writes into via taskctx — so a relative file write and a
+	// shell command land in the same place. An explicit workdir param wins.
+	workdir := taskctx.WorkspaceFromCtx(ctx)
+	if workdirVal, ok := params["workdir"].(string); ok && workdirVal != "" {
 		workdir = workdirVal
 	}
 
@@ -161,12 +164,23 @@ func (t *TerminalTool) Execute(ctx context.Context, params map[string]interface{
 	// Check for execution error (exit code != 0 but output was produced)
 	if err != nil {
 		t.logger.Warn("command exited non-zero", "command", command, "error", err, "output_len", len(outputStr))
-		// Still return the output — the agent can read it to understand the failure
-		return outputStr, nil
+		// Still return the output (the agent can read it to adapt), but append a
+		// machine-readable exit-status marker so Go-side honesty gates can detect
+		// the failure WITHOUT trusting the model's claim about it.
+		return outputStr + fmt.Sprintf("\n[exit_status: non-zero (code %d)]", exitCodeFromErr(err)), nil
 	}
 
 	t.logger.Info("command executed successfully", "command", command)
 	return outputStr, nil
+}
+
+// exitCodeFromErr extracts the exit code from a *exec.ExitError; returns -1 if
+// unknown (e.g. the process was killed without an exit status).
+func exitCodeFromErr(err error) int {
+	if ee, ok := err.(*exec.ExitError); ok {
+		return ee.ExitCode()
+	}
+	return -1
 }
 
 // isDangerousCommand checks if a command is potentially dangerous.

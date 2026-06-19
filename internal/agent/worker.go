@@ -31,6 +31,17 @@ import (
 // runWorker is the production worker. Tests may inject a.orchWorkerFn to
 // bypass it for dispatcher-focused tests.
 func (a *Agent) runWorker(ctx context.Context, task string, step OrchStep, prior map[int]string) (string, error) {
+	// QA step: run as an ISOLATED sub-agent (fresh context, read+terminal tools,
+	// QA system prompt) so it independently verifies the deliverable without
+	// seeing the implement worker's claims. "Never trust the author."
+	if isQAStep(step.Description) {
+		out, err := a.QAWorker(ctx, task)
+		if err != nil {
+			return out, err
+		}
+		return tagBuildFailureIfNeeded(step, nil, out), nil
+	}
+
 	w := &orchestratedWorker{agent: a, task: task, step: step, prior: prior, cfg: a.effectiveOrchConfig()}
 
 	messages := w.buildMessages()
@@ -40,14 +51,47 @@ func (a *Agent) runWorker(ctx context.Context, task string, step OrchStep, prior
 			"step", step.ID, "reason", filterReason, "kept", toolNames(toolDefs))
 	}
 
-	out, err := w.reactLoop(ctx, messages, toolDefs)
+	// reactLoop returns the FULLY-GROWN message slice (including the assistant
+	// tool-call messages it appended during the loop) so verifyArtifacts can see
+	// the file-write calls and verify them. Passing the original `messages` here
+	// previously made every file-creation step false-fail verification.
+	grownMessages, out, err := w.reactLoop(ctx, messages, toolDefs)
 	if err != nil {
 		return "", err
 	}
 	// verifyArtifacts preserves the verifyFileCreation test seam: it is the
 	// load-bearing defense against hallucinated file creation, run only for
 	// file-creation steps after the sub-loop returns.
-	return w.verifyArtifacts(ctx, messages, out), nil
+	out = w.verifyArtifacts(ctx, grownMessages, out)
+	return tagBuildFailureIfNeeded(step, grownMessages, out), nil
+}
+
+// tagBuildFailureIfNeeded enforces build/test honesty: if this is a VERIFY or QA
+// step and any terminal command it ran exited non-zero, prepend a failure tag.
+// This is a GO-SIDE check (independent of the model's claim) — a failing build
+// can never be reported as success.
+func tagBuildFailureIfNeeded(step OrchStep, messages []kyoci.Message, out string) string {
+	if !isVerifyOrQAStep(step.Description) {
+		return out
+	}
+	if !containsNonZeroExit(messages, out) {
+		return out
+	}
+	return "[VERIFICATION FAILED: a build/test command exited non-zero] " + out
+}
+
+// containsNonZeroExit reports whether any tool-result message Content or the
+// worker's final output carries the terminal's non-zero-exit marker.
+func containsNonZeroExit(messages []kyoci.Message, out string) bool {
+	if strings.Contains(out, "[exit_status: non-zero") {
+		return true
+	}
+	for _, m := range messages {
+		if strings.Contains(m.Content, "[exit_status: non-zero") {
+			return true
+		}
+	}
+	return false
 }
 
 // orchestratedWorker carries the per-step inputs that every phase of the
@@ -146,12 +190,14 @@ func (w *orchestratedWorker) filterToolsForStep() ([]kyoci.ToolDefinition, strin
 // model emits a tool-free answer or a budget is hit. Returns the worker's
 // finding string. The message sequence is prompt-sensitive — see the thinking
 // tests — so this preserves the exact append order of the legacy loop.
-func (w *orchestratedWorker) reactLoop(ctx context.Context, messages []kyoci.Message, toolDefs []kyoci.ToolDefinition) (string, error) {
+func (w *orchestratedWorker) reactLoop(ctx context.Context, messages []kyoci.Message, toolDefs []kyoci.ToolDefinition) ([]kyoci.Message, string, error) {
 	a, step, cfg := w.agent, w.step, w.cfg
 	maxIter := cfg.WorkerMaxIterations
 	toolCallsMade := 0
 	tokensUsed := 0
-	nudged := false // Layer 2: evidence guard fires at most once per worker
+	nudged := false   // Layer 2: evidence guard fires at most once per worker
+	lastToolSig := "" // circuit breaker: consecutive identical tool calls
+	toolSigRepeat := 0
 
 	// Announce this worker as a new row in the activity tree. TaskID is the
 	// step ID; TaskName is the step description; ParentID stays empty for
@@ -195,10 +241,10 @@ func (w *orchestratedWorker) reactLoop(ctx context.Context, messages []kyoci.Mes
 				Status:   "error",
 				Detail:   fmt.Sprintf("LLM call failed: %v", err),
 			})
-			return "", fmt.Errorf("worker LLM call failed (iter %d): %w", iter, err)
+			return messages, "", fmt.Errorf("worker LLM call failed (iter %d): %w", iter, err)
 		}
 		if resp == nil {
-			return "", fmt.Errorf("worker LLM returned nil response (iter %d)", iter)
+			return messages, "", fmt.Errorf("worker LLM returned nil response (iter %d)", iter)
 		}
 		// Surface running metrics for the activity tree. Some providers only
 		// report usage on the final chunk; we accumulate what we have.
@@ -298,7 +344,7 @@ func (w *orchestratedWorker) reactLoop(ctx context.Context, messages []kyoci.Mes
 				TokensUsed: tokensUsed,
 				Status:     "done",
 			})
-			return out, nil
+			return messages, out, nil
 		}
 
 		// Append the assistant message (with tool_calls) to the conversation.
@@ -315,7 +361,22 @@ func (w *orchestratedWorker) reactLoop(ctx context.Context, messages []kyoci.Mes
 				// Budget hit — return what we have so far.
 				a.logger.Warn("orchestrator: worker hit tool budget",
 					"step", step.ID, "budget", cfg.WorkerMaxToolCalls)
-				return fmt.Sprintf("[step %d hit tool budget; partial findings in conversation]", step.ID), nil
+				return messages, fmt.Sprintf("[partial: step %d hit tool budget — partial findings in conversation]", step.ID), nil
+			}
+			// Circuit breaker: a worker stuck repeating the EXACT same tool call
+			// (same name + args) is in a loop (e.g. hammering a failing command).
+			// After 3 consecutive identical calls, finalize the worker.
+			sig := tc.Name + ":" + tc.Arguments
+			if sig == lastToolSig {
+				toolSigRepeat++
+			} else {
+				toolSigRepeat = 1
+				lastToolSig = sig
+			}
+			if toolSigRepeat >= 3 {
+				a.logger.Warn("orchestrator: circuit breaker — repeated tool call, finalizing worker",
+					"step", step.ID, "tool", tc.Name)
+				return messages, fmt.Sprintf("[circuit breaker: step %d stopped — repeated tool call %q]", step.ID, tc.Name), nil
 			}
 			result, terr := a.act(ctx, tc)
 			if terr != nil {
@@ -341,7 +402,7 @@ func (w *orchestratedWorker) reactLoop(ctx context.Context, messages []kyoci.Mes
 	if strings.TrimSpace(lastContent) == "" {
 		lastContent = fmt.Sprintf("[step %d did not produce a final finding within %d iterations]", step.ID, maxIter)
 	}
-	return lastContent, nil
+	return messages, lastContent, nil
 }
 
 // verifyArtifacts runs the file-creation verification gate for file-producing
@@ -411,14 +472,16 @@ func (w *orchestratedWorker) verifyArtifacts(ctx context.Context, messages []kyo
 		// Re-filter tools (deterministic — returns the same set as the original
 		// worker invocation) and re-run the loop.
 		toolDefs, _ := w.filterToolsForStep()
-		retryOut, err := w.reactLoop(ctx, retryMessages, toolDefs)
+		// Re-run the loop; verify against the GROWN messages it returns (which
+		// include the retry's file-write tool calls), not the pre-loop retryMessages.
+		retryGrown, retryOut, err := w.reactLoop(ctx, retryMessages, toolDefs)
 		if err != nil {
 			w.agent.logger.Warn("orchestrator: verification retry failed (reactLoop error)",
 				"step", w.step.ID, "attempt", attempt+1, "err", err)
 			break
 		}
 
-		retryTagged := w.agent.verifyFileCreation(ctx, w.step, retryMessages, retryOut)
+		retryTagged := w.agent.verifyFileCreation(ctx, w.step, retryGrown, retryOut)
 		if !strings.HasPrefix(retryTagged, "[VERIFICATION FAILED") {
 			w.agent.logger.Info("orchestrator: verification retry succeeded",
 				"step", w.step.ID, "attempt", attempt+1)
@@ -432,7 +495,8 @@ func (w *orchestratedWorker) verifyArtifacts(ctx context.Context, messages []kyo
 		}
 
 		// Still failing — extract any newly-claimed files and try once more.
-		currentMessages = retryMessages
+		// Build the next retry on the grown messages (includes prior writes).
+		currentMessages = retryGrown
 		currentOut = retryOut
 		currentTagged = retryTagged
 	}

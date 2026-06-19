@@ -62,12 +62,12 @@ func extractPayload(query string) string {
 		return ""
 	}
 
-	// Strategy 1: split on colon.
+	// Strategy 1: split on colon — the canonical "verb: operand" form. A colon
+	// with nothing after it means an EMPTY operand (return ""), not "fall through
+	// and return the whole verb" — the old behavior made "verb:" look like the
+	// operand itself, defeating every skill's empty-input guard.
 	if idx := strings.Index(query, ":"); idx >= 0 {
-		rest := strings.TrimSpace(query[idx+1:])
-		if rest != "" {
-			return rest
-		}
+		return strings.TrimSpace(query[idx+1:])
 	}
 
 	// Strategy 2: strip common command prefixes.

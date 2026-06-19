@@ -371,7 +371,7 @@ func (s *SWIFTBICValidateSkill) Execute(_ context.Context, q string) (string, er
 	country := raw[4:6]
 	location := raw[6:8]
 	if !isAllUpperAlpha(bank) {
-		return fmt.Sprintf("invalid: bank code (first 4 chars) must be letters, got %q", bank), nil
+		return fmt.Sprintf("invalid: SWIFT/BIC must be uppercase letters, got %q", bank), nil
 	}
 	if !validISOAlpha2[country] {
 		return fmt.Sprintf("invalid: country code %q is not a valid ISO 3166-1 alpha-2 code", country), nil

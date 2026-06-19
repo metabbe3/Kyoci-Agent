@@ -5,6 +5,48 @@ import (
 	"strings"
 )
 
+// negationRe matches a negation token that ends immediately before a trigger
+// term, bounded on the left by a non-alphanumeric (or start of text) so words
+// like "piano" or "info" are not mistaken for "no". An optional run of common
+// filler words (a/an/the/plain/use/…) may sit between the negation and the
+// term, so "no html", "not plain html", "don't use tailwind", "without any
+// css" are all recognized as negated. Case-insensitive (callers pre-lowercase).
+var negationRe = regexp.MustCompile(`(?:^|[^a-z0-9])(?:no|not|without|avoid|skip|never|non|n't|don't|dont|cannot|can't|won't|shouldn't)(?:[\s-]+(?:a|an|the|this|that|plain|raw|vanilla|any|just|only|more|use|using|used|write|writing|written|build|building|built|add|adding|added|include|including|included|generate|generating|generated|produce|producing|produced|create|creating|created|make|making))*[\s-]*$`)
+
+// isNegated reports whether the text immediately preceding position idx in
+// taskLower ends with a negation token (e.g. in "no html", the "html" at idx
+// is negated). Inspects a small window (32 chars) before idx.
+func isNegated(taskLower string, idx int) bool {
+	start := idx - 32
+	if start < 0 {
+		start = 0
+	}
+	return negationRe.MatchString(taskLower[start:idx])
+}
+
+// containsNonNegated reports whether needle occurs in haystack at least once at
+// a position NOT preceded by a negation token. A negated occurrence ("no html")
+// is skipped; a separate positive occurrence still counts. haystack must be
+// already lowercased; needle is lowercased here.
+func containsNonNegated(haystack, needle string) bool {
+	needle = strings.ToLower(needle)
+	if needle == "" {
+		return false
+	}
+	from := 0
+	for {
+		i := strings.Index(haystack[from:], needle)
+		if i < 0 {
+			return false
+		}
+		pos := from + i
+		if !isNegated(haystack, pos) {
+			return true
+		}
+		from = pos + len(needle)
+	}
+}
+
 // MatchScore reports how strongly an agent's triggers fire against a task.
 // Returns 0 when nothing matches.
 //
@@ -22,12 +64,12 @@ func MatchScore(def AgentDef, task string) int {
 	taskLower := strings.ToLower(task)
 	score := 0
 	for _, kw := range def.Triggers.Keywords {
-		if kw != "" && strings.Contains(taskLower, strings.ToLower(kw)) {
+		if kw != "" && containsNonNegated(taskLower, kw) {
 			score++
 		}
 	}
 	for _, a := range def.Triggers.Anchors {
-		if a != "" && strings.Contains(taskLower, strings.ToLower(a)) {
+		if a != "" && containsNonNegated(taskLower, a) {
 			score += 3
 		}
 	}

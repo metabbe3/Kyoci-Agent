@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 
 	kyoci "github.com/metabbe3/Kyoci-Agent/pkg"
@@ -65,6 +66,27 @@ var exploreFileWriteActions = map[string]bool{
 	"mkdir": true, "move": true, "copy": true, "touch": true,
 }
 
+// redirectRe matches a shell file-redirect (`>`, `>>`) but NOT an fd-redirect
+// like `2>&1` (the `&` excludes it) — so `npm run build 2>&1` is allowed while
+// `cat > x` / `echo > x` are blocked. Used to keep the QA/explore agents
+// read-only even though they hold the terminal tool (to run builds/tests).
+var redirectRe = regexp.MustCompile(`>(?:[^&]|$)`)
+
+// commandWritesToFile reports whether a shell command writes to the filesystem
+// via the terminal (redirect, tee, sed -i, dd of=, rm/mv/cp/chmod/chown, mkfs…).
+func commandWritesToFile(cmd string) bool {
+	if redirectRe.MatchString(cmd) {
+		return true
+	}
+	low := strings.ToLower(cmd)
+	for _, p := range []string{"tee", "sed -i", "dd of=", "truncate", "rm ", "mv ", "cp ", "chmod", "chown", "mkfs", "fdisk"} {
+		if strings.Contains(low, p) {
+			return true
+		}
+	}
+	return false
+}
+
 // ReadOnlyToolFilter wraps a ToolProvider and restricts both the visible tools
 // and the actions that can be taken. Used by ExploreWorker to enforce
 // read-only behavior at the tool layer.
@@ -119,12 +141,25 @@ func (f *ReadOnlyToolFilter) Execute(ctx context.Context, name string, params ma
 		return "", fmt.Errorf("%w: %q is not in the explore allowlist", ErrExploreToolNotAllowed, name)
 	}
 	if name == "file" {
-		action, _ := params["action"].(string)
+		// The file tool's parameter is "operation" (read/write/edit/append/...).
+		// Reading the wrong key ("action") left the write-block completely inert.
+		action, _ := params["operation"].(string)
+		if action == "" {
+			action, _ = params["action"].(string) // legacy/fallback
+		}
 		if action == "" {
 			action = "read" // default
 		}
 		if exploreFileWriteActions[action] {
 			return "", fmt.Errorf("%w: file action %q is a write; explore worker is read-only", ErrExploreToolNotAllowed, action)
+		}
+	}
+	if name == "terminal" {
+		// QA/explore may run builds/tests via terminal but must NOT write files
+		// through shell redirects (cat >, echo >, tee, sed -i, ...). The file
+		// tool's writes are already blocked above; this closes the shell leak.
+		if cmd, _ := params["command"].(string); commandWritesToFile(cmd) {
+			return "", fmt.Errorf("%w: terminal file-writing command blocked (read-only)", ErrExploreToolNotAllowed)
 		}
 	}
 	return f.inner.Execute(ctx, name, params)
