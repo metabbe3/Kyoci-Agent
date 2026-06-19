@@ -203,11 +203,57 @@ func (a *Agent) executeOrchestrated(ctx context.Context, task string) (*kyoci.Ta
 		finalAnswer = fallbackConcatenate(task, steps, results)
 	}
 
+	// Empty-content fallback: if the synthesizer returned nothing AND every
+	// worker result is a failure tag, the user gets a confusing empty bubble
+	// (or a frontend timeout masquerading as "chat: 500"). Replace with a
+	// user-facing message that points them at the activity log for diagnosis.
+	if strings.TrimSpace(finalAnswer) == "" && allWorkersFailed(results) {
+		a.logger.Warn("orchestrator: all worker steps failed; returning diagnostic message",
+			"step_count", len(steps))
+		finalAnswer = allFailedUserMessage
+	}
+
 	return &kyoci.TaskResult{
 		Content:    finalAnswer,
 		Iterations: len(steps),
 	}, nil
 }
+
+// allWorkersFailed reports whether every entry in the results map carries a
+// known failure tag. Used by the empty-content fallback to distinguish "all
+// steps failed" from "synthesizer just didn't say anything useful".
+func allWorkersFailed(results map[int]string) bool {
+	if len(results) == 0 {
+		return true
+	}
+	for _, r := range results {
+		if !strings.Contains(r, "[VERIFICATION FAILED") &&
+			!strings.Contains(r, "[worker error") &&
+			!strings.Contains(r, "[no tool evidence") &&
+			!strings.Contains(r, "[circuit breaker") &&
+			!strings.Contains(r, "[step ") && strings.TrimSpace(r) != "" {
+			return false
+		}
+	}
+	return true
+}
+
+// allFailedUserMessage is the diagnostic the user sees when every worker step
+// failed. Points at the Live Activity panel for the specific failure point
+// rather than leaving them with an empty bubble.
+const allFailedUserMessage = `I wasn't able to complete this task — every step failed verification.
+
+Common causes (check the Live Activity panel at /activity for the specific failure point):
+
+1. **Tool calls blocked** — look for "access denied" errors in the server log. The most common cause is the model emitting paths with a leading slash (e.g. "/projects/foo" instead of "projects/foo"). The path-rewrite recovery usually catches this; if you still see it, rephrase the task to use cwd-relative paths.
+
+2. **Model emitted prose instead of calling tools** — look for "Verification retry" events in the activity tree. The retry loop tries to recover, but if every step retries, the underlying model may be struggling with the prompt.
+
+3. **Model crashed mid-request** — look for "no available providers" or "model has crashed" errors in the server log. This usually means the model is too heavy for parallel load; switch to a smaller one.
+
+4. **Network/timeout** — if the request took longer than ~5 minutes, the frontend may have given up before the server finished. Check the server log for the actual completion status.
+
+Try rephrasing the task (shorter, more specific) or checking the Live Activity panel to see exactly which step failed and why.`
 
 // executeOrchestratedStream runs the orchestrator pipeline and emits the final
 // synthesizer output as stream chunks. Called from ExecuteStream when

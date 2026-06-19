@@ -140,8 +140,34 @@ func (f *FileTool) Execute(ctx context.Context, params map[string]interface{}) (
 
 	// Validate path
 	if !f.isPathAllowed(absPath, workspace) {
-		f.logger.Warn("path access denied", "path", absPath)
-		return "", fmt.Errorf("access denied: path outside allowed directories")
+		// RECOVERY: 8B models routinely emit "/projects/foo" when they mean
+		// "projects/foo" relative to the cwd. The leading slash makes the path
+		// look absolute-from-root, which fails the allowed-dirs check.
+		//
+		// Heuristic: only recover if (a) the stripped form is allowed AND
+		// (b) the stripped form's PARENT DIRECTORY EXISTS. The parent-exists
+		// check is the key safeguard — it stops us from rewriting deep system
+		// paths like "/var/folders/abc/T/..." into "<cwd>/var/folders/abc/T/..."
+		// and silently creating garbage. Real project subdirs like "projects/"
+		// exist; "/var/folders/..." stripped to "var/folders/..." does not.
+		if strings.HasPrefix(path, "/") {
+			stripped := strings.TrimPrefix(path, "/")
+			if strippedAbs, stripErr := f.expandPath(stripped, workspace); stripErr == nil &&
+				f.isPathAllowed(strippedAbs, workspace) {
+				parent := filepath.Dir(strippedAbs)
+				if pinfo, perr := os.Stat(parent); perr == nil && pinfo.IsDir() {
+					f.logger.Info("file tool: rewrote absolute-style path to cwd-relative",
+						"original", path, "rewritten", stripped)
+					absPath = strippedAbs
+				}
+			}
+		}
+		if !f.isPathAllowed(absPath, workspace) {
+			f.logger.Warn("path access denied", "path", absPath,
+				"hint", "if you meant a project-relative path, drop the leading slash")
+			return "", fmt.Errorf("access denied: path %q outside allowed directories (try %q without the leading slash)",
+				path, strings.TrimPrefix(path, "/"))
+		}
 	}
 
 	// Execute operation based on type
