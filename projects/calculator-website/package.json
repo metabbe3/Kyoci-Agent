@@ -1,32 +1,19 @@
 {
   "name": "calculator-website",
-  "version": "0.0.0",
-  "private": true,
+  "version": "1.0.0",
+  "description": "A simple calculator website using TypeScript and Webpack.",
+  "main": "src/index.ts",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc && vite build",
-    "preview": "vite preview"
-  },
-  "dependencies": {
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "build": "webpack",
+    "start": "webpack --mode development"
   },
   "devDependencies": {
-    "@babel/core": "^8.0.1",
-    "@babel/preset-env": "^8.0.2",
-    "@types/react": "^18.3.31",
-    "@types/react-dom": "^18.3.7",
-    "babel-loader": "^10.1.1",
-    "ts-loader": "^9.6.1",
-    "typescript": "^4.9.5",
-    "vite": "^8.0.16",
-    "webpack": "^5.107.2",
-    "webpack-cli": "^7.0.3"
-  },
-  "description": "",
-  "main": "index.js",
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "type": "commonjs"
+    "webpack": "^5.0.0",
+    "webpack-cli": "^4.0.0",
+    "ts-loader": "^9.0.0",
+    "babel-loader": "^8.0.0",
+    "@babel/core": "^7.0.0",
+    "@babel/preset-env": "^7.0.0",
+    "typescript": "^4.0.0"
+  }
 }

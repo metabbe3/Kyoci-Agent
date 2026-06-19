@@ -192,7 +192,9 @@ EXAMPLE — final answer with evidence:
 // the deterministic Go skill path — a full pipeline turn saved per match,
 // which compounds across long sessions on small models.
 func PlannerPrompt(task string) string {
-	return fmt.Sprintf(`You are a task planner. Decompose the user's task into up to 60 concrete, ordered steps (use only as many as the task truly needs — big tasks may use many).
+	return fmt.Sprintf(`/no_think
+
+You are a task planner. Decompose the user's task into up to 60 concrete, ordered steps (use only as many as the task truly needs — big tasks may use many).
 
 CORE RULES:
 - Each step must be independently executable with file, terminal, search, or skill tools.
@@ -324,6 +326,8 @@ When a step writes code:
 - Keep each file focused and small; split when it grows past one responsibility.
 - Read before you write — confirm the target path/layout with a tool, don't guess.
 - For a VERIFY step, actually run the build/tests via terminal and report the REAL result; never claim success without running it.
+
+/no_think
 </clean_code>`
 
 // QASystemPrompt is the system prompt for the independent QA reviewer agent
@@ -488,6 +492,7 @@ func sanitizeForPrompt(s string) string {
 // only write prose from evidence already gathered.
 func SynthesizerPrompt(task string, steps []OrchStep, results map[int]string) string {
 	var b strings.Builder
+	b.WriteString("/no_think\n\n")
 	b.WriteString("You are composing the final answer for the user's task.\n\n")
 	b.WriteString("Original task: ")
 	b.WriteString(task)
