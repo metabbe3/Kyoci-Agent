@@ -232,7 +232,22 @@ func (w *orchestratedWorker) reactLoop(ctx context.Context, messages []kyoci.Mes
 			req.ToolChoice = "required"
 		}
 
-		resp, err := a.router.Route(ctx, req, a.config.PreferredProvider)
+		// Per-phase model routing: workers use local model (cheap file ops).
+		// QA steps use cloud model (hard reasoning). Override when routing
+		// is configured; fall back to global default otherwise.
+		workerProvider := a.config.PreferredProvider
+		if route := w.cfg.ModelRouting.Worker; route.Provider != "" {
+			req.Model = route.Model
+			workerProvider = route.Provider
+		}
+		if isQAStep(step.Description) {
+			if route := w.cfg.ModelRouting.QA; route.Provider != "" {
+				req.Model = route.Model
+				workerProvider = route.Provider
+			}
+		}
+
+		resp, err := a.router.Route(ctx, req, workerProvider)
 		if err != nil {
 			a.emitActivity(kyoci.ActivityEvent{
 				Type:     kyoci.ActivityTaskComplete,

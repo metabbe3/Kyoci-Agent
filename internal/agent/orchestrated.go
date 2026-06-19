@@ -39,34 +39,36 @@ import (
 
 // OrchestratorConfig controls the Orchestrator-Worker pipeline.
 type OrchestratorConfig struct {
-	// Enabled routes Execute() through executeOrchestrated() instead of the
-	// legacy ReAct loop or thinking state machine.
-	Enabled bool
-	// MaxSteps caps the planner output. Default 60 — high so big tasks decompose
-	// fully; injected SETUP/VERIFY/QA steps are carved out of the cap, and
-	// circuit breakers guard against runaway loops.
-	MaxSteps int
-	// MaxParallel bounds concurrent worker goroutines. Default 3, matching
-	// the existing delegation.go pattern.
-	MaxParallel int
-	// WorkerMaxIterations is the per-worker ReAct iteration cap. Default 8 —
-	// a worker should complete in a few tool calls; 8 is a generous ceiling.
+	Enabled             bool
+	MaxSteps            int
+	MaxParallel         int
 	WorkerMaxIterations int
-	// WorkerMaxToolCalls is the per-worker tool-call budget. Default 8.
-	WorkerMaxToolCalls int
-	// WorkerMaxTokens caps MaxTokens on each worker completion request,
-	// independent of the larger global AgentConfig.MaxTokens. Without this,
-	// a single worker can burn 8,192 tokens (≈3 minutes on gemma4:12b) on one
-	// step and exhaust the session time budget. Default 4096 — halves the
-	// observed worst case while leaving room for file content passed as
-	// tool-call arguments.
-	WorkerMaxTokens int
+	WorkerMaxToolCalls  int
+	WorkerMaxTokens     int
+	// ModelRouting enables per-phase model selection — e.g., cloud for the
+	// planner (hard reasoning) and local for workers (cheap file ops). When
+	// a phase route is empty, falls back to the agent's global config.
+	ModelRouting ModelRouting
+}
+
+// PhaseRoute selects which provider+model to use for one orchestrator phase.
+type PhaseRoute struct {
+	Provider string `yaml:"provider"`
+	Model    string `yaml:"model"`
+}
+
+// ModelRouting holds per-phase routing. Empty fields mean "use global default".
+type ModelRouting struct {
+	Planner     PhaseRoute `yaml:"planner"`
+	Worker      PhaseRoute `yaml:"worker"`
+	Synthesizer PhaseRoute `yaml:"synthesizer"`
+	QA          PhaseRoute `yaml:"qa"`
 }
 
 // DefaultOrchestratorConfig returns the production defaults.
 func DefaultOrchestratorConfig() OrchestratorConfig {
 	return OrchestratorConfig{
-		Enabled:             false, // opt-in via config/default.yaml
+		Enabled:             false,
 		MaxSteps:            60,
 		MaxParallel:         3,
 		WorkerMaxIterations: 8,
@@ -625,7 +627,16 @@ func (a *Agent) planTask(ctx context.Context, task string) ([]OrchStep, error) {
 		ToolChoice: "none", // belt-and-suspenders: never emit tool_calls
 	}
 
-	resp, err := a.router.Route(ctx, req, a.config.PreferredProvider)
+	// Per-phase model routing: cloud for planning (hard reasoning), local for
+	// workers/synthesizer (cheap ops). Override Model + PreferredProvider
+	// when routing is configured; fall back to global default otherwise.
+	plannerProvider := a.config.PreferredProvider
+	if route := a.effectiveOrchConfig().ModelRouting.Planner; route.Provider != "" {
+		req.Model = route.Model
+		plannerProvider = route.Provider
+	}
+
+	resp, err := a.router.Route(ctx, req, plannerProvider)
 	if err != nil {
 		return nil, fmt.Errorf("planner LLM call failed: %w", err)
 	}
@@ -1453,7 +1464,13 @@ func (a *Agent) synthesize(ctx context.Context, task string, steps []OrchStep, r
 		ToolChoice: "none", // belt-and-suspenders: never emit tool_calls
 	}
 
-	resp, err := a.router.Route(ctx, req, a.config.PreferredProvider)
+	synthProvider := a.config.PreferredProvider
+	if route := a.effectiveOrchConfig().ModelRouting.Synthesizer; route.Provider != "" {
+		req.Model = route.Model
+		synthProvider = route.Provider
+	}
+
+	resp, err := a.router.Route(ctx, req, synthProvider)
 	if err != nil {
 		return "", fmt.Errorf("synthesizer LLM call failed: %w", err)
 	}

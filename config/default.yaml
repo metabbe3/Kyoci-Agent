@@ -79,13 +79,13 @@ providers:
     ollama:
         enabled: false
         base_url: "http://127.0.0.1:1234"
-        default_model: "google/gemma-4-12b"
+        default_model: "meta-llama-3.1-8b-instruct"
         timeout: 300
         max_retries: 5
     lmstudio:
         enabled: true
         base_url: "http://127.0.0.1:1234/v1"
-        default_model: "google/gemma-4-12b"
+        default_model: "meta-llama-3.1-8b-instruct"
         timeout: 300
         max_retries: 2
     openai:
@@ -95,12 +95,12 @@ providers:
         timeout: 120
         max_retries: 3
     anthropic:
-        enabled: false # flip to true + paste api_key when ready
+        enabled: true
         base_url: "https://api.z.ai/api/anthropic"
-        default_model: "GLM-4.7"
+        default_model: "glm-5.2"
         timeout: 1000
         max_retries: 3
-        api_key: "" # paste your z.ai / Anthropic key here (never commit real keys)
+        api_key: "" # paste your z.ai token locally (see env: KYOCI_ANTHROPIC_API_KEY) # z.ai token — REDACT IN GIT COMMIT
     gemini:
         enabled: false
         base_url: "https://generativelanguage.googleapis.com/v1beta/openai"
@@ -248,6 +248,19 @@ agent:
         worker_max_iterations: 8 # per-worker ReAct iteration cap
         worker_max_tool_calls: 8 # per-worker tool budget
         max_retries: 2 # pre-HITL retries on VERIFY: failure (L4 benchmark)
+        model_routing:
+            planner:
+                provider: "anthropic"
+                model: "glm-5.2"
+            worker:
+                provider: "lmstudio"
+                model: "meta-llama-3.1-8b-instruct"
+            synthesizer:
+                provider: "lmstudio"
+                model: "meta-llama-3.1-8b-instruct"
+            qa:
+                provider: "anthropic"
+                model: "glm-5.2"
     thinking:
         enabled: false # legacy JSON-scratchpad mode; opt-in only
         tool_budget: 25 # max tool calls per task before forced Reflect/terminate
