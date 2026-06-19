@@ -1,1 +1,0 @@
-// Full content of ui.ts goes here. This file implements the binding layer to capture user input from the HTML interface and pass it correctly to the core logic module (src/calculator.ts).

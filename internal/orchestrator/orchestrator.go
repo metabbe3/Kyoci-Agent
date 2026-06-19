@@ -392,6 +392,27 @@ func (o *Orchestrator) Execute(ctx context.Context, task string, roleType kyoci.
 	}
 	o.finalizeTaskWorkspace(taskID, roleType.String(), task, startedAt, completedAt, status, filesWritten, logPath, result, err)
 
+	// Persist a per-task summary to short-term memory so future tasks can
+	// recall what was done. Each task gets a fresh conversation context
+	// (per-execution), but cross-task LEARNING happens via memory recall —
+	// the memory_recall tool surfaces these summaries when relevant.
+	if result != nil && o.memoryMgr != nil {
+		summary := summarizeTaskForMemory(task, roleType.String(), status, result, completedAt.Sub(startedAt))
+		if _, storeErr := o.memoryMgr.Store(ctx, summary, kyoci.MemoryShortTerm, map[string]string{
+			"type":         "task_summary",
+			"task":         truncateForMemory(task, 200),
+			"role":         roleType.String(),
+			"status":       status,
+			"task_id":      taskID,
+			"files_written": fmt.Sprintf("%d", len(filesWritten)),
+			"completed_at": completedAt.Format(time.RFC3339),
+		}); storeErr != nil {
+			runLogger.Warn("orchestrator: failed to store task summary to short-term memory", "err", storeErr)
+		} else {
+			runLogger.Info("orchestrator: task summary stored to short-term memory", "task_id", taskID)
+		}
+	}
+
 	if err != nil {
 		runLogger.Error("task execution failed", "task_id", taskID, "error", err, "role", roleType.String())
 		span.SetAttribute("error", err.Error())
@@ -858,4 +879,38 @@ func detectTaskSandbox(task string) string {
 func isDir(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && info.IsDir()
+}
+
+// summarizeTaskForMemory produces a compact (~300 token) summary of a
+// completed task, suitable for storage in short-term memory. Future tasks
+// recall these via memory_recall when they touch the same files/concepts.
+//
+// The structure is deliberately fielded (not prose) so the recall
+// similarity scorer can match on keywords cleanly.
+func summarizeTaskForMemory(task, role, status string, result *kyoci.TaskResult, duration time.Duration) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Task: %s\n", truncateForMemory(task, 200))
+	fmt.Fprintf(&b, "Role: %s\n", role)
+	fmt.Fprintf(&b, "Status: %s\n", status)
+	fmt.Fprintf(&b, "Duration: %s\n", duration.Round(time.Millisecond))
+	if result != nil {
+		fmt.Fprintf(&b, "Tool calls: %d\n", result.ToolCallsMade)
+		fmt.Fprintf(&b, "Iterations: %d\n", result.Iterations)
+		if result.Usage.TotalTokens > 0 {
+			fmt.Fprintf(&b, "Tokens: %d\n", result.Usage.TotalTokens)
+		}
+		if result.Content != "" {
+			fmt.Fprintf(&b, "\nKey output:\n%s\n", truncateForMemory(result.Content, 500))
+		}
+	}
+	return b.String()
+}
+
+// truncateForMemory clips s to maxChars with an ellipsis. Keeps memory
+// entries compact so the recall index doesn't bloat.
+func truncateForMemory(s string, maxChars int) string {
+	if len(s) <= maxChars {
+		return s
+	}
+	return s[:maxChars-1] + "…"
 }

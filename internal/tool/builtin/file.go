@@ -73,6 +73,18 @@ func (f *FileTool) Parameters() []kyoci.ToolParameter {
 			Required:    false,
 		},
 		{
+			Name:        "offset",
+			Type:        "integer",
+			Description: "Read-only: byte offset to start reading from (default 0). Use for chunked reads of large files — see the trailer in the response for the next offset to use.",
+			Required:    false,
+		},
+		{
+			Name:        "limit",
+			Type:        "integer",
+			Description: "Read-only: max bytes to return (default 0 = no limit). When both offset and limit are 0 AND the file is large, auto-chunking returns the first 4096 bytes plus instructions to continue.",
+			Required:    false,
+		},
+		{
 			Name:        "pattern",
 			Type:        "string",
 			Description: "Pattern to search for (required for search operation)",
@@ -173,7 +185,13 @@ func (f *FileTool) Execute(ctx context.Context, params map[string]interface{}) (
 	// Execute operation based on type
 	switch operation {
 	case "read":
-		return f.readFile(absPath)
+		// Optional offset/limit for chunked reads — protects the agent's
+		// context budget when reading large files. Both default to 0;
+		// when 0+0 AND file > 8KB, auto-chunk kicks in (returns first 4KB
+		// + a "call again with offset=N" trailer).
+		offset := paramInt(params, "offset")
+		limit := paramInt(params, "limit")
+		return f.readFile(absPath, offset, limit)
 	case "write":
 		return f.writeFile(absPath, params)
 	case "edit":
@@ -229,8 +247,8 @@ func (f *FileTool) expandPath(path, workspace string) (string, error) {
 }
 
 // readFile reads the content of a file.
-func (f *FileTool) readFile(path string) (string, error) {
-	f.logger.Info("reading file", "path", path)
+func (f *FileTool) readFile(path string, offset, limit int) (string, error) {
+	f.logger.Info("reading file", "path", path, "offset", offset, "limit", limit)
 
 	content, err := os.ReadFile(path)
 	if err != nil {
@@ -248,6 +266,55 @@ func (f *FileTool) readFile(path string) (string, error) {
 		return "", fmt.Errorf("failed to read file: %w", err)
 	}
 
+	totalLen := len(content)
+
+	// Default chunk size — keeps each read under ~1000 tokens so the agent's
+	// 8K-token context budget isn't blown by a single large file.
+	const defaultChunk = 4096
+
+	// AUTO-CHUNK: if caller passed offset=0 + limit=0 AND file is large,
+	// return the first defaultChunk bytes + a "call again" trailer. This
+	// protects the agent from accidentally loading a 50KB file in one shot
+	// and exhausting its context window.
+	if offset == 0 && limit == 0 && totalLen > 2*defaultChunk {
+		end := defaultChunk
+		if end > totalLen {
+			end = totalLen
+		}
+		chunk := content[:end]
+		remaining := totalLen - end
+		return fmt.Sprintf("=== %s (chunk 1, %d/%d bytes) ===\n%s\n=== end chunk — call file:read again with offset=%d to fetch the next %d bytes (%d bytes remaining) ===",
+			path, end, totalLen, string(chunk), end, defaultChunk, remaining), nil
+	}
+
+	// Explicit offset/limit: return the requested range + trailer if more remains.
+	if offset > 0 || limit > 0 {
+		if offset >= totalLen {
+			return "", fmt.Errorf("offset %d >= file size %d — nothing to read at that offset", offset, totalLen)
+		}
+		end := totalLen
+		if limit > 0 {
+			end = offset + limit
+			if end > totalLen {
+				end = totalLen
+			}
+		}
+		chunk := content[offset:end]
+		remaining := totalLen - end
+		header := fmt.Sprintf("=== %s (offset=%d, %d/%d bytes) ===\n", path, offset, end-offset, totalLen)
+		trailer := ""
+		if remaining > 0 {
+			nextChunk := defaultChunk
+			if limit > 0 && limit < defaultChunk {
+				nextChunk = limit
+			}
+			trailer = fmt.Sprintf("\n=== end chunk — call file:read again with offset=%d to fetch the next %d bytes (%d bytes remaining) ===",
+				end, nextChunk, remaining)
+		}
+		return header + string(chunk) + trailer, nil
+	}
+
+	// Small file, no offset/limit — return full content unchanged.
 	return string(content), nil
 }
 
@@ -493,4 +560,22 @@ func (f *FileTool) isPathAllowed(path, workspace string) bool {
 // SetAllowedDirs sets the list of allowed directories.
 func (f *FileTool) SetAllowedDirs(dirs []string) {
 	f.allowedDirs = dirs
+}
+
+// paramInt extracts an integer parameter from the tool-call params map,
+// tolerating both int and float64 encodings (JSON numbers arrive as
+// float64 via the LLM tool-call JSON path). Returns 0 when the key is
+// missing or the value is the wrong type.
+func paramInt(params map[string]interface{}, key string) int {
+	if v, ok := params[key]; ok {
+		switch n := v.(type) {
+		case int:
+			return n
+		case int64:
+			return int(n)
+		case float64:
+			return int(n)
+		}
+	}
+	return 0
 }
