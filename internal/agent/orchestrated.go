@@ -194,6 +194,57 @@ func (a *Agent) executeOrchestrated(ctx context.Context, task string) (*kyoci.Ta
 		}
 	}
 
+	// Phase 3b — Build/QA fix-pass loop. If QA reported a build failure with
+	// specific errors, re-invoke the file-creation worker(s) with those errors
+	// as context, then re-run QA. Catches the case where files exist on disk
+	// (so per-step verification passes) but their CONTENT has bugs that only
+	// surface at build time. Mirrors the worker-level verification retry but
+	// operates ACROSS steps.
+	const maxFixPasses = 2
+	for fixPass := 0; fixPass < maxFixPasses; fixPass++ {
+		qaFailure := extractQAFailure(steps, results)
+		if qaFailure == "" {
+			break // QA passed (or no QA step) — done
+		}
+		a.logger.Info("orchestrator: build fix-pass firing",
+			"pass", fixPass+1, "max", maxFixPasses, "failure_len", len(qaFailure))
+		a.emitActivity(kyoci.ActivityEvent{
+			Type:     kyoci.ActivityLog,
+			TaskID:   "root",
+			TaskName: "Build fix-pass",
+			Detail:   fmt.Sprintf("QA reported build errors — re-running file-creation steps with error context (pass %d/%d)", fixPass+1, maxFixPasses),
+		})
+		redoResults, redoErr := a.redoFileCreationSteps(ctx, task, steps, results, qaFailure)
+		if redoErr != nil {
+			a.logger.Warn("orchestrator: build fix-pass returned error; keeping prior results", "err", redoErr)
+			break
+		}
+		for k, v := range redoResults {
+			results[k] = v
+		}
+		newQAFailure := extractQAFailure(steps, results)
+		if newQAFailure == "" {
+			a.logger.Info("orchestrator: build fix-pass succeeded", "pass", fixPass+1)
+			a.emitActivity(kyoci.ActivityEvent{
+				Type:     kyoci.ActivityLog,
+				TaskID:   "root",
+				TaskName: "Build fix-pass",
+				Detail:   fmt.Sprintf("Fix-pass %d succeeded — QA re-verified, no errors", fixPass+1),
+			})
+			break
+		}
+		if newQAFailure == qaFailure {
+			a.logger.Warn("orchestrator: build fix-pass stuck (same failure as prior pass); giving up", "pass", fixPass+1)
+			a.emitActivity(kyoci.ActivityEvent{
+				Type:     kyoci.ActivityLog,
+				TaskID:   "root",
+				TaskName: "Build fix-pass",
+				Detail:   fmt.Sprintf("Fix-pass %d stuck — same errors after retry; accepting failure", fixPass+1),
+			})
+			break
+		}
+	}
+
 	// Phase 4 — Synthesize
 	finalAnswer, synthErr := a.synthesize(ctx, task, steps, results)
 	if synthErr != nil {
@@ -1188,6 +1239,82 @@ func extractWrittenPaths(messages []kyoci.Message) []string {
 		}
 	}
 	return out
+}
+
+// extractQAFailure scans the worker results for a QA/verify step that failed.
+// Returns the failure text (which includes the build errors) when found, or
+// "" when QA passed OR there's no QA/verify step in the plan.
+//
+// Recognized failure markers:
+//   - "[VERIFICATION FAILED" — set by tagBuildFailureIfNeeded on non-zero exit
+//   - "**FAIL**" / "VERDICT: FAIL" — what the QA worker typically emits
+//
+// Returns the FULL result text (capped at 4000 chars by callers via the
+// BuildFixNudge trim) so the model can see all the errors at once.
+func extractQAFailure(steps []OrchStep, results map[int]string) string {
+	for _, step := range steps {
+		if !isVerifyOrQAStep(step.Description) {
+			continue
+		}
+		out, ok := results[step.ID]
+		if !ok {
+			continue
+		}
+		low := strings.ToLower(out)
+		// Build-failure tag from tagBuildFailureIfNeeded.
+		if strings.Contains(out, "[VERIFICATION FAILED") {
+			return out
+		}
+		// QA-reported failure verdicts — common phrasings from the QA worker.
+		if strings.Contains(low, "verdict: fail") ||
+			strings.Contains(low, "**fail**") ||
+			strings.Contains(low, "qa verdict: fail") {
+			return out
+		}
+	}
+	return ""
+}
+
+// redoFileCreationSteps re-invokes every file-creation worker with the QA
+// failure text appended as context. Returns a map containing the new outputs
+// for those steps (caller merges into the main results map).
+//
+// Each redo call:
+//  1. Builds messages via the standard worker pipeline (buildMessages).
+//  2. Appends a synthetic user turn carrying BuildFixNudge(qaFailure).
+//  3. Runs reactLoop with the existing toolset.
+//  4. Runs verifyArtifacts so per-step file-creation still gates.
+//
+// The redo DOESN'T re-run read-only or pure-reasoning steps — only those
+// where isFileCreationStep is true, since those are the ones capable of
+// fixing the build errors via file:write.
+func (a *Agent) redoFileCreationSteps(ctx context.Context, task string, steps []OrchStep, prior map[int]string, qaFailure string) (map[int]string, error) {
+	out := map[int]string{}
+	nudge := BuildFixNudge(qaFailure)
+	for _, step := range steps {
+		if !isFileCreationStep(step.Description) {
+			continue
+		}
+		a.logger.Info("orchestrator: fix-pass re-running file-creation step", "step", step.ID, "desc", step.Description)
+		// Inject the prior results + the QA failure as additional context.
+		// We pass `prior` directly because runWorker already threads it
+		// through to buildMessages. The QA failure gets appended as a
+		// synthetic prior-result entry to make sure the worker sees it.
+		augmentedPrior := make(map[int]string, len(prior)+1)
+		for k, v := range prior {
+			augmentedPrior[k] = v
+		}
+		augmentedPrior[9999] = "[QA BUILD FAILURE — your previous code had these errors]\n" + qaFailure + "\n\n" + nudge
+
+		redoOut, err := a.runWorker(ctx, task, step, augmentedPrior)
+		if err != nil {
+			a.logger.Warn("orchestrator: fix-pass step errored; keeping prior output",
+				"step", step.ID, "err", err)
+			continue
+		}
+		out[step.ID] = redoOut
+	}
+	return out, nil
 }
 
 // extractClaimedFiles scans free-form prose for filename-like tokens the model

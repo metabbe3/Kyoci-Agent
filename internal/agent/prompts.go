@@ -400,6 +400,37 @@ func VerificationRetryNudge(claimed []string) string {
 	return b.String()
 }
 
+// BuildFixNudge is the prompt appended when the QA step finds build errors in
+// files the dev worker previously wrote. Unlike VerificationRetryNudge (which
+// fires when the model didn't write at all), this fires when files exist but
+// their CONTENT has bugs that only surface at build time.
+//
+// Used by the orchestrator-level fix-pass loop in executeOrchestrated. The
+// nudge shows the model the ACTUAL error output so it can decide what to fix
+// — no guesswork. Demands file:write calls; forbids prose-only responses.
+func BuildFixNudge(qaFailure string) string {
+	// Cap the failure text so we don't blow the worker's context budget with
+	// a giant stack trace. 2000 chars is enough for the typical TS/webpack
+	// error set; longer output is truncated with a marker.
+	failure := qaFailure
+	if len(failure) > 2000 {
+		failure = failure[:2000] + "\n…[truncated — see server log for full output]"
+	}
+	var b strings.Builder
+	b.WriteString("BUILD FAILURE. The QA step ran the code you previously wrote and got these errors:\n\n")
+	b.WriteString(failure)
+	b.WriteString("\n\nFix each error. For each one:\n")
+	b.WriteString("  1. If unsure what's wrong, call file:read with the path from the error message (use offset/limit for large files).\n")
+	b.WriteString("  2. Call file:write with the corrected FULL file content.\n")
+	b.WriteString("  3. Do NOT explain the fix in prose. Emit the file:write call.\n\n")
+	b.WriteString("ANTI-PATTERNS — if your response does any of these, you have FAILED:\n")
+	b.WriteString("  - \"The code looks correct to me…\" — it isn't; the build said so.\n")
+	b.WriteString("  - \"Try running npm install again…\" — fix the code, don't punt to the user.\n")
+	b.WriteString("  - Markdown code blocks without a preceding file:write call.\n\n")
+	b.WriteString("After fixing all errors, you may add ONE sentence summarizing what was wrong.")
+	return b.String()
+}
+
 // SynthesizerPrompt asks the model to compose the final user-facing answer
 // from the per-step worker results. The synthesizer has no tools — it can
 // only write prose from evidence already gathered.

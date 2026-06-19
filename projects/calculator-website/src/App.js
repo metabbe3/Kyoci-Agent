@@ -1,0 +1,2 @@
+import { jsx as _jsx, jsxs as _jsxs } from "react/jsx-runtime";
+_jsxs("div", { className: "calculator", children: [_jsx("input", { type: "text", id: "display", disabled: true }), _jsx("div", { className: "buttons", children: ['7', '8', '9', '/', '4', '5', '6', '*', '1', '2', '3', '-', '0', '.', '=', '+'].map((btn, index) => (_jsx("button", { onClick: () => handleButtonClick(btn), children: btn }, index))) })] });
