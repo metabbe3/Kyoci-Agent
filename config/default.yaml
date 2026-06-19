@@ -79,13 +79,13 @@ providers:
     ollama:
         enabled: false
         base_url: "http://127.0.0.1:1234"
-        default_model: "qwen/qwen2.5-coder-14b"
+        default_model: "qwen/qwen3.5-9b"
         timeout: 300
         max_retries: 5
     lmstudio:
         enabled: true
         base_url: "http://127.0.0.1:1234/v1"
-        default_model: "qwen/qwen2.5-coder-14b"
+        default_model: "qwen/qwen3.5-9b"
         timeout: 300
         max_retries: 2
     openai:
