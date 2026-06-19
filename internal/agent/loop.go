@@ -192,7 +192,7 @@ func (a *Agent) Execute(ctx context.Context, task string) (*kyoci.TaskResult, er
 	a.logger.Info("agent executing task", "task", task)
 
 	// a. Check skills first (zero-AI fast path)
-	if a.config.EnableSkills && a.skills != nil {
+	if a.config.EnableSkills && a.skills != nil && !looksLikeBuildTask(task) {
 		if skill, matched := a.skills.Match(task); matched {
 			a.logger.Info("skill matched, executing (zero-AI)", "skill", skill.Name())
 			result, err := a.skills.Execute(ctx, skill.Name(), task)
@@ -265,7 +265,7 @@ func (a *Agent) ExecuteStream(ctx context.Context, task string) (<-chan kyoci.St
 		a.logger.Info("agent executing task (streaming)", "task", task)
 
 		// a. Check skills first (zero-AI fast path)
-		if a.config.EnableSkills && a.skills != nil {
+		if a.config.EnableSkills && a.skills != nil && !looksLikeBuildTask(task) {
 			if skill, matched := a.skills.Match(task); matched {
 				a.logger.Info("skill matched, executing (zero-AI)", "skill", skill.Name())
 				result, err := a.skills.Execute(ctx, skill.Name(), task)

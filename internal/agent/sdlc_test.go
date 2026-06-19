@@ -128,3 +128,45 @@ func TestIsFileCreationStep_ReadStepNotCreation(t *testing.T) {
 		t.Error("expected isFileCreationStep('Create App.tsx')=true")
 	}
 }
+
+// looksLikeBuildTask must send build tasks to the orchestrator (not a skill).
+func TestLooksLikeBuildTask(t *testing.T) {
+	yes := []string{
+		"make me a personal website portfolio with light and blue color",
+		"build a react app",
+		"create a landing page for my startup",
+	}
+	no := []string{
+		"sha256 of hello",
+		"color #aaffee",
+		"generate uuid",
+		"create a hash of secret",
+		"what is the capital of france",
+	}
+	for _, s := range yes {
+		if !looksLikeBuildTask(s) {
+			t.Errorf("expected looksLikeBuildTask(%q)=true", s)
+		}
+	}
+	for _, s := range no {
+		if looksLikeBuildTask(s) {
+			t.Errorf("expected looksLikeBuildTask(%q)=false", s)
+		}
+	}
+}
+
+// isServeTask detects URL/preview requests.
+func TestIsServeTask(t *testing.T) {
+	yes := []string{"give me the working url to see it", "preview the result", "open it in browser"}
+	no := []string{"make a website", "fix the bug in main.go", "what is REST"}
+	for _, s := range yes {
+		if !isServeTask(s) {
+			t.Errorf("expected isServeTask(%q)=true", s)
+		}
+	}
+	for _, s := range no {
+		if isServeTask(s) {
+			t.Errorf("expected isServeTask(%q)=false", s)
+		}
+	}
+}

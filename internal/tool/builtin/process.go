@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/metabbe3/Kyoci-Agent/internal/taskctx"
 	kyoci "github.com/metabbe3/Kyoci-Agent/pkg"
 )
 
@@ -100,7 +101,7 @@ func (p *ProcessTool) Execute(ctx context.Context, params map[string]interface{}
 	// Execute based on action type
 	switch action {
 	case "start":
-		return p.startProcess(params)
+		return p.startProcess(ctx, params)
 	case "list":
 		return p.listProcesses()
 	case "kill":
@@ -113,7 +114,7 @@ func (p *ProcessTool) Execute(ctx context.Context, params map[string]interface{}
 }
 
 // startProcess starts a command in the background.
-func (p *ProcessTool) startProcess(params map[string]interface{}) (string, error) {
+func (p *ProcessTool) startProcess(ctx context.Context, params map[string]interface{}) (string, error) {
 	// Extract command
 	command, ok := params["command"].(string)
 	if !ok || command == "" {
@@ -127,6 +128,11 @@ func (p *ProcessTool) startProcess(params map[string]interface{}) (string, error
 
 	// Create command
 	cmd := exec.Command(shell, args...)
+	// Default to the per-task workspace so a background server runs where the
+	// agent's files live (tasks/<id>/deliverable/). Mirrors the terminal tool.
+	if ws := taskctx.WorkspaceFromCtx(ctx); ws != "" {
+		cmd.Dir = ws
+	}
 
 	// Create output buffer
 	var outputBuffer bytes.Buffer

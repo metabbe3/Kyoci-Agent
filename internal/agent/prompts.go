@@ -209,15 +209,20 @@ Decompose into a strict 3-phase SDLC order. EVERY code task MUST follow this:
   1. SETUP (FIRST step, tool_hint "terminal"): create the project manifest
      (package.json / go.mod / requirements.txt / Cargo.toml) AND install
      dependencies (npm install / go mod download / pip install). One step.
-  2. IMPLEMENT (middle steps, tool_hint "file"): one module/file per step. Each
-     file small + focused + REUSABLE — extract repeated logic into helpers
-     (DRY), prefer composition/OOP over monoliths, one responsibility per file.
+  2. IMPLEMENT (middle steps, tool_hint "file"): BATCH related files into fewer,
+     larger steps — aim for 3-6 implement steps total (e.g. one step for all
+     structure/HTML, one for all styles/CSS, one for all logic/JS), NOT one step
+     per file. Each file small + focused + REUSABLE (DRY, composition/OOP).
      ALWAYS specify the full path under projects/<slug>/.
   3. VERIFY (tool_hint "terminal"): run the build/tests
      (npm run build / go build ./... / go test ./...) and report pass/fail.
 Mark the SETUP step depends_on [] and every later step depends_on the SETUP id
 so SETUP runs first; VERIFY depends_on every implement step so it runs after
 them. (A QA review step is added automatically after VERIFY — do not emit it.)
+If the user wants to preview/see the result ("give me the URL", "let me see it"),
+produce STATIC files (plain HTML/CSS/JS, or build to dist/) — do NOT run a
+blocking dev server (npm run dev / vite), which hangs. A SERVE step is added
+automatically to start a background static server and report the localhost URL.
 
 PROJECT DIRECTORY CONVENTION:
 All build artifacts go under projects/<slug>/ where <slug> is a short kebab-case

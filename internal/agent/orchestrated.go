@@ -70,7 +70,7 @@ func DefaultOrchestratorConfig() OrchestratorConfig {
 		MaxParallel:         3,
 		WorkerMaxIterations: 8,
 		WorkerMaxToolCalls:  8,
-		WorkerMaxTokens:     4096,
+		WorkerMaxTokens:     8192,
 	}
 }
 
@@ -460,6 +460,7 @@ func isVerifyOrQAStep(desc string) bool {
 const fileCreationDirective = `FILE-CREATION DIRECTIVE: This step requires the 'file' tool with operation=write to produce a new artifact.
 - Do NOT use operation=list, operation=search, operation=read, or memory_recall as your final action — those gather context, they do not create the file.
 - When ready, emit a single file tool call shaped like: {"operation":"write","path":"<the target path>","content":"<the full file contents>"}.
+- For large files (>100 lines), write in chunks: first operation=write the opening section, then operation=append subsequent sections. Each chunk must be complete on its own.
 - Only after the write returns successfully, report what you created in one or two sentences.`
 
 
@@ -538,6 +539,47 @@ func (a *Agent) planTask(ctx context.Context, task string) ([]OrchStep, error) {
 var setupKeywords = []string{"setup", "install", "npm install", "go mod", "pip install", "yarn", "dependencies"}
 var verifyKeywords = []string{"verify", "build", "test", "lint", "npm run build", "go test", "go build", "compile"}
 var qaKeywords = []string{"qa:", "independently", "independent review"}
+var serveKeywords = []string{"working url", "give me the url", "give me a url", "preview", "see it", "to see it", "localhost", "open it", "live demo", "run it"}
+
+// isServeTask reports whether the task asks for a preview/URL to see the result.
+func isServeTask(task string) bool {
+	low := strings.ToLower(task)
+	for _, k := range serveKeywords {
+		if strings.Contains(low, k) {
+			return true
+		}
+	}
+	return false
+}
+
+// buildTaskVerbs / artifactNouns feed looksLikeBuildTask, which gates the
+// zero-AI skill fast-path so a build task containing a skill keyword (e.g.
+// "make a website with color") reaches the orchestrator, not a trivial skill.
+var buildTaskVerbs = []string{"make", "build", "create", "generate", "implement", "scaffold", "develop", "set up"}
+var artifactNouns = []string{"website", "web page", "portfolio", "app", "application", "program", "project", "page", "site", "component", "script", "cli", "api", "service", "landing page", "dashboard", "game", "tool", "bot", "server"}
+
+// looksLikeBuildTask reports whether a task is a multi-step build/creation
+// request (not a trivial skill query). Heuristic: a creation verb AND an
+// artifact noun, OR a creation verb in a long (>80 char) task.
+func looksLikeBuildTask(task string) bool {
+	low := strings.ToLower(task)
+	hasVerb := false
+	for _, v := range buildTaskVerbs {
+		if strings.Contains(low, v) {
+			hasVerb = true
+			break
+		}
+	}
+	if !hasVerb {
+		return false
+	}
+	for _, n := range artifactNouns {
+		if strings.Contains(low, n) {
+			return true
+		}
+	}
+	return len(task) > 80
+}
 
 // ensureSDLCSteps guarantees SDLC structure for code-creation tasks: a SETUP
 // step (id 0, install deps) that every other step depends on, and a VERIFY step
@@ -603,6 +645,20 @@ func (a *Agent) ensureSDLCSteps(task string, steps []OrchStep, maxSteps int) []O
 		}
 		steps = append(steps, qa)
 		a.logger.Info("orchestrator: injected QA step (independent review) as the last step")
+	}
+	if isServeTask(task) && !anyStepMatches(steps, serveKeywords) {
+		allIDs := make([]int, 0, len(steps))
+		for _, s := range steps {
+			allIDs = appendUniqueInt(allIDs, s.ID)
+		}
+		serve := OrchStep{
+			ID:          nextStepID(steps),
+			Description: "SERVE: start a background static file server in the project dir (process tool: 'cd projects/<slug> && python3 -m http.server 8000') and report the URL http://localhost:8000.",
+			ToolHint:    "terminal",
+			DependsOn:   allIDs, // runs truly last
+		}
+		steps = append(steps, serve)
+		a.logger.Info("orchestrator: injected SERVE step (preview URL) as the last step")
 	}
 	// No post-injection truncation: planTask already capped the PLANNER output to
 	// maxSteps before calling ensureSDLCSteps. The injected SETUP/VERIFY/QA steps
