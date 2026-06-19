@@ -19,7 +19,9 @@
     "babel-loader": "^10.1.1",
     "ts-loader": "^9.6.1",
     "typescript": "^4.9.5",
-    "vite": "^8.0.16"
+    "vite": "^8.0.16",
+    "webpack": "^5.107.2",
+    "webpack-cli": "^7.0.3"
   },
   "description": "",
   "main": "index.js",

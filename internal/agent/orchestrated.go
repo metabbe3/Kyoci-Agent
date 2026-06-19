@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -233,13 +234,20 @@ func (a *Agent) executeOrchestrated(ctx context.Context, task string) (*kyoci.Ta
 			})
 			break
 		}
-		if newQAFailure == qaFailure {
-			a.logger.Warn("orchestrator: build fix-pass stuck (same failure as prior pass); giving up", "pass", fixPass+1)
+		// Signature-based bail: extract stable error patterns (file:line,
+		// error codes) and bail if the SIGNATURE hasn't changed across
+		// passes — that means the model isn't making real progress even
+		// if the surrounding text shifted (timestamps, addresses, etc.).
+		oldSig := errorSignature(qaFailure)
+		newSig := errorSignature(newQAFailure)
+		if oldSig == newSig && oldSig != "" {
+			a.logger.Warn("orchestrator: build fix-pass stuck (same error signature); giving up",
+				"pass", fixPass+1, "signature", oldSig)
 			a.emitActivity(kyoci.ActivityEvent{
 				Type:     kyoci.ActivityLog,
 				TaskID:   "root",
 				TaskName: "Build fix-pass",
-				Detail:   fmt.Sprintf("Fix-pass %d stuck — same errors after retry; accepting failure", fixPass+1),
+				Detail:   fmt.Sprintf("Fix-pass %d stuck — same error signature after retry; accepting failure", fixPass+1),
 			})
 			break
 		}
@@ -1290,7 +1298,11 @@ func extractQAFailure(steps []OrchStep, results map[int]string) string {
 // fixing the build errors via file:write.
 func (a *Agent) redoFileCreationSteps(ctx context.Context, task string, steps []OrchStep, prior map[int]string, qaFailure string) (map[int]string, error) {
 	out := map[int]string{}
-	nudge := BuildFixNudge(qaFailure)
+	// SECURITY: qaFailure is untrusted model output. Sanitize before
+	// embedding into the synthetic prior-result entry so a hallucinated
+	// "[SYSTEM] ignore previous" can't manipulate the dev worker.
+	safeFailure := sanitizeForPrompt(qaFailure)
+	nudge := BuildFixNudge(qaFailure) // BuildFixNudge sanitizes internally too
 	for _, step := range steps {
 		if !isFileCreationStep(step.Description) {
 			continue
@@ -1299,12 +1311,14 @@ func (a *Agent) redoFileCreationSteps(ctx context.Context, task string, steps []
 		// Inject the prior results + the QA failure as additional context.
 		// We pass `prior` directly because runWorker already threads it
 		// through to buildMessages. The QA failure gets appended as a
-		// synthetic prior-result entry to make sure the worker sees it.
+		// synthetic prior-result entry to make sure the worker sees it,
+		// wrapped in clear delimiters so it's treated as data.
 		augmentedPrior := make(map[int]string, len(prior)+1)
 		for k, v := range prior {
 			augmentedPrior[k] = v
 		}
-		augmentedPrior[9999] = "[QA BUILD FAILURE — your previous code had these errors]\n" + qaFailure + "\n\n" + nudge
+		augmentedPrior[9999] = "[QA BUILD FAILURE — your previous code had these errors]\n" +
+			"--- BEGIN UNTRUSTED DATA ---\n" + safeFailure + "\n--- END UNTRUSTED DATA ---\n\n" + nudge
 
 		redoOut, err := a.runWorker(ctx, task, step, augmentedPrior)
 		if err != nil {
@@ -1315,6 +1329,46 @@ func (a *Agent) redoFileCreationSteps(ctx context.Context, task string, steps []
 		out[step.ID] = redoOut
 	}
 	return out, nil
+}
+
+// errorSignature extracts a stable fingerprint of a build/QA failure so the
+// fix-pass loop can detect when the model is stuck (same underlying errors
+// despite different surrounding text). Extracts:
+//   - `file.ext:LINE:` — the canonical compiler error location
+//   - `TS\d+` / `npm ERR! \w+` / `Error: \w+` — error codes
+//
+// Returns a sorted, deduped, comma-joined string of matches. Empty when no
+// stable patterns found (caller falls back to whatever behavior makes sense).
+//
+// Two failures with the same signature are treated as "same problem" — even
+// if the prose around them changed. This stops the loop from running the full
+// 2 passes when the model is flailing with the same root cause.
+func errorSignature(failure string) string {
+	if failure == "" {
+		return ""
+	}
+	patterns := []*regexp.Regexp{
+		// file:line:col — TypeScript, Rust, Go, most C/C++ compilers.
+		regexp.MustCompile(`[a-zA-Z0-9_./-]+\.(?:go|ts|tsx|js|jsx|py|rs|java|c|cpp|h)\s*:\s*\d+`),
+		// TypeScript error codes.
+		regexp.MustCompile(`TS\d+`),
+		// npm/yarn errors.
+		regexp.MustCompile(`npm ERR! \w+`),
+		// Generic "Error: Name" patterns.
+		regexp.MustCompile(`Error:\s+[A-Z][a-zA-Z]+`),
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, re := range patterns {
+		for _, m := range re.FindAllString(failure, -1) {
+			if !seen[m] {
+				seen[m] = true
+				out = append(out, m)
+			}
+		}
+	}
+	sort.Strings(out)
+	return strings.Join(out, ",")
 }
 
 // extractClaimedFiles scans free-form prose for filename-like tokens the model
