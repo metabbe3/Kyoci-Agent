@@ -39,9 +39,20 @@ if [[ ! -d web/node_modules ]]; then
     (cd web && npm install) || { err "npm install failed"; read -n1; exit 1; }
 fi
 
-# ── Start backend ────────────────────────────────────────────────────────────
+# ── Kill any existing instances (prevents port conflicts) ─────────────────────
+pkill -f "cmd/server" 2>/dev/null; sleep 1
+
+# ── Rebuild frontend (ensures embedded SPA is current) ────────────────────────
+log "Building frontend…"
+(cd web && npm run build --silent) 2>/dev/null && ok "Frontend built" || warn "Frontend build skipped"
+
+# ── Clear Go cache (forces fresh embed of web/dist/) ──────────────────────────
+log "Clearing Go build cache…"
+go clean -cache
+
+# ── Start backend (HITL disabled to avoid gRPC port conflicts) ───────────────
 log "Starting Go backend on :8080 …"
-go run ./cmd/server >"$SCRIPT_DIR/backend.log" 2>&1 &
+KYOCI_HITL_ENABLED=false go run ./cmd/server >"$SCRIPT_DIR/backend.log" 2>&1 &
 BACKEND_PID=$!
 
 # ── Wait for backend health ──────────────────────────────────────────────────

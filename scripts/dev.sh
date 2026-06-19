@@ -40,8 +40,12 @@ trap cleanup EXIT INT TERM
 echo "→ logs writing to $LOG_DIR/"
 
 if [[ "$mode" == "all" || "$mode" == "backend" ]]; then
+	pkill -f "cmd/server" 2>/dev/null; sleep 1
+	echo "→ rebuilding frontend + clearing Go cache (fresh embed)…"
+	(cd web && npm run build --silent) 2>/dev/null
+	go clean -cache
 	echo "→ starting backend (go run ./cmd/server) → $LOG_DIR/backend.log"
-	go run ./cmd/server > "$LOG_DIR/backend.log" 2>&1 &
+	KYOCI_HITL_ENABLED=false go run ./cmd/server > "$LOG_DIR/backend.log" 2>&1 &
 	backend_pid=$!
 	echo "  backend pid: $backend_pid"
 fi
