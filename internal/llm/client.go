@@ -509,7 +509,7 @@ func (c *OpenAIClient) Models() []kyoci.ModelInfo {
 	if c.config.APIKey != "" {
 		req.Header.Set("Authorization", "Bearer "+c.config.APIKey)
 	}
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.client.Do(req)
 	if err != nil {
 		return c.fallbackModels()
 	}
