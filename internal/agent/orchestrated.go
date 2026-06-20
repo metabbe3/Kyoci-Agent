@@ -498,7 +498,7 @@ func toolNames(defs []kyoci.ToolDefinition) []string {
 
 // fileCreationVerbs are the action words that signal a step produces an
 // artifact (as opposed to reading or exploring one).
-var fileCreationVerbs = []string{"create", "write", "generate", "initialize", "implement", "build", "add", "make"}
+var fileCreationVerbs = []string{"create", "write", "generate", "initialize", "implement", "build", "add", "make", "fix", "repair", "update", "modify", "edit", "change", "correct", "patch", "refactor", "rewrite", "replace"}
 
 // fileExtensionOrFileNoun is true when the description mentions a concrete file
 // target (a filename, a path with a dot extension, or the word "file"). This

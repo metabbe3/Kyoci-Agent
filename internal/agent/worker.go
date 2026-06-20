@@ -251,7 +251,7 @@ func (w *orchestratedWorker) reactLoop(ctx context.Context, messages []kyoci.Mes
 		// but Layer 2 catches that case — this is the belt-and-suspenders layer
 		// for providers that DO honor tool_choice. On later turns, leave it
 		// "" (auto) so the model can decide when it has enough evidence.
-		if iter == 0 && needsEvidence {
+		if needsEvidence && (iter == 0 || isFileCreationStep(step.Description)) {
 			req.ToolChoice = "required"
 		}
 

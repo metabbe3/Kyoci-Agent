@@ -146,7 +146,7 @@ func (s *Server) chatAgent(w http.ResponseWriter, r *http.Request, req ChatReque
 
 	timeout := time.Duration(req.Timeout) * time.Second
 	if timeout <= 0 {
-		timeout = 10 * time.Minute
+		timeout = 30 * time.Minute
 	}
 	// Use Background context like the existing /api/v1/execute handler —
 	// orchestrator sub-agents should survive HTTP client disconnects.
