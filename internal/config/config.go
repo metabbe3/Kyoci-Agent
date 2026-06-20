@@ -522,29 +522,32 @@ type AgentConfig struct {
 // Each LLM call in the pipeline has exactly one job (decompose, execute-one-step,
 // or synthesize), which is the capability envelope a 14B model handles reliably.
 type OrchestrationConfig struct {
-	// Enabled routes agents through executeOrchestrated() instead of the
-	// thinking state machine or legacy ReAct loop.
-	Enabled bool `yaml:"enabled" env:"KYOCI_ORCHESTRATION_ENABLED"`
+	Enabled             bool `yaml:"enabled" env:"KYOCI_ORCHESTRATION_ENABLED"`
+	MaxSteps            int  `yaml:"max_steps" env:"KYOCI_ORCHESTRATION_MAX_STEPS"`
+	MaxParallel         int  `yaml:"max_parallel" env:"KYOCI_ORCHESTRATION_MAX_PARALLEL"`
+	WorkerMaxIterations int  `yaml:"worker_max_iterations" env:"KYOCI_ORCHESTRATION_WORKER_MAX_ITERATIONS"`
+	WorkerMaxToolCalls  int  `yaml:"worker_max_tool_calls" env:"KYOCI_ORCHESTRATION_WORKER_MAX_TOOL_CALLS"`
+	MaxRetries          int  `yaml:"max_retries" env:"KYOCI_ORCHESTRATION_MAX_RETRIES"`
 
-	// MaxSteps caps the number of steps the planner may emit. Beyond this the
-	// plan is usually over-decomposed and the synthesizer struggles to use it.
-	// Default: 6
-	MaxSteps int `yaml:"max_steps" env:"KYOCI_ORCHESTRATION_MAX_STEPS"`
+	// ModelRouting enables per-phase model selection — cloud for planner/QA
+	// (hard reasoning), local for read-only workers (cheap ops), cloud for
+	// file-creation workers (needs code generation quality).
+	ModelRouting ModelRoutingConfig `yaml:"model_routing"`
+}
 
-	// MaxParallel bounds concurrent worker goroutines. Default: 3
-	MaxParallel int `yaml:"max_parallel" env:"KYOCI_ORCHESTRATION_MAX_PARALLEL"`
+// ModelRoutingConfig holds per-phase routing config parsed from YAML.
+type ModelRoutingConfig struct {
+	Planner            PhaseRouteConfig `yaml:"planner"`
+	Worker             PhaseRouteConfig `yaml:"worker"`
+	WorkerFileCreation PhaseRouteConfig `yaml:"worker_file_creation"`
+	Synthesizer        PhaseRouteConfig `yaml:"synthesizer"`
+	QA                 PhaseRouteConfig `yaml:"qa"`
+}
 
-	// WorkerMaxIterations is the per-worker ReAct iteration cap. Default: 8
-	WorkerMaxIterations int `yaml:"worker_max_iterations" env:"KYOCI_ORCHESTRATION_WORKER_MAX_ITERATIONS"`
-
-	// WorkerMaxToolCalls is the per-worker tool-call budget. Default: 8
-	WorkerMaxToolCalls int `yaml:"worker_max_tool_calls" env:"KYOCI_ORCHESTRATION_WORKER_MAX_TOOL_CALLS"`
-
-	// MaxRetries caps how many times the orchestrator retries a task whose
-	// VERIFY directive exits non-zero before falling back to HITL. 0 disables
-	// the retry loop entirely (legacy single-shot behavior). Default: 0.
-	// The L4 benchmark sets this to 2.
-	MaxRetries int `yaml:"max_retries" env:"KYOCI_ORCHESTRATION_MAX_RETRIES"`
+// PhaseRouteConfig selects which provider+model to use for one phase.
+type PhaseRouteConfig struct {
+	Provider string `yaml:"provider"`
+	Model    string `yaml:"model"`
 }
 
 // ==============================================================================

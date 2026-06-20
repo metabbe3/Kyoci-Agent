@@ -107,6 +107,13 @@ func (r *RoleRegistry) Register(cfg kyoci.RoleConfig) error {
 			MaxParallel:         r.orchCfg.MaxParallel,
 			WorkerMaxIterations: r.orchCfg.WorkerMaxIterations,
 			WorkerMaxToolCalls:  r.orchCfg.WorkerMaxToolCalls,
+			ModelRouting: agent.ModelRouting{
+				Planner:            agent.PhaseRoute{Provider: r.orchCfg.ModelRouting.Planner.Provider, Model: r.orchCfg.ModelRouting.Planner.Model},
+				Worker:             agent.PhaseRoute{Provider: r.orchCfg.ModelRouting.Worker.Provider, Model: r.orchCfg.ModelRouting.Worker.Model},
+				WorkerFileCreation: agent.PhaseRoute{Provider: r.orchCfg.ModelRouting.WorkerFileCreation.Provider, Model: r.orchCfg.ModelRouting.WorkerFileCreation.Model},
+				Synthesizer:        agent.PhaseRoute{Provider: r.orchCfg.ModelRouting.Synthesizer.Provider, Model: r.orchCfg.ModelRouting.Synthesizer.Model},
+				QA:                 agent.PhaseRoute{Provider: r.orchCfg.ModelRouting.QA.Provider, Model: r.orchCfg.ModelRouting.QA.Model},
+			},
 		},
 	}
 
