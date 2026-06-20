@@ -100,7 +100,7 @@ providers:
         default_model: "glm-5.2"
         timeout: 1000
         max_retries: 3
-        api_key: "" # paste your z.ai token locally (see env: KYOCI_ANTHROPIC_API_KEY) # z.ai token — REDACT IN GIT COMMIT
+        api_key: "" # paste your z.ai token locally # z.ai token — REDACT IN GIT COMMIT
     gemini:
         enabled: false
         base_url: "https://generativelanguage.googleapis.com/v1beta/openai"
@@ -253,11 +253,11 @@ agent:
                 provider: "anthropic"
                 model: "glm-5.2"
             worker:
-                provider: "lmstudio"
-                model: "meta-llama-3.1-8b-instruct"
+                provider: "anthropic"
+                model: "glm-5.2"
             synthesizer:
-                provider: "lmstudio"
-                model: "meta-llama-3.1-8b-instruct"
+                provider: "anthropic"
+                model: "glm-5.2"
             qa:
                 provider: "anthropic"
                 model: "glm-5.2"
