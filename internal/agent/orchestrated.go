@@ -554,9 +554,19 @@ var fileCreationVerbRe = regexp.MustCompile(`(?i)\b(` + strings.Join(fileCreatio
 // later (e.g. "Read user_service.go to understand the implementation").
 var readOnlyStepStartRe = regexp.MustCompile(`(?i)^\s*(read|review|search|analyze|analyse|investigate|understand|locate|find|list|explore|examine|audit|inspect)\b`)
 
+// setupStepRe matches SETUP steps — these install dependencies via npm/pip/go,
+// not via file:write. They should be exempt from file-creation verification.
+var setupStepRe = regexp.MustCompile(`(?i)^\s*setup\b`)
+
 func isFileCreationStep(desc string) bool {
 	low := strings.ToLower(strings.TrimSpace(desc))
 	if readOnlyStepStartRe.MatchString(low) {
+		return false
+	}
+	// SETUP steps install dependencies via package managers (npm install, pip
+	// install, go mod download). They modify package.json/go.mod legitimately
+	// but NOT via file:write — so verification must not require file:write.
+	if setupStepRe.MatchString(low) {
 		return false
 	}
 	if !fileCreationVerbRe.MatchString(low) {
