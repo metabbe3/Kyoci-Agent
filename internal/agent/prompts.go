@@ -211,10 +211,12 @@ Decompose into a strict 3-phase SDLC order. EVERY code task MUST follow this:
   1. SETUP (FIRST step, tool_hint "terminal"): create the project manifest
      (package.json / go.mod / requirements.txt / Cargo.toml) AND install
      dependencies (npm install / go mod download / pip install). One step.
-  2. IMPLEMENT (middle steps, tool_hint "file"): BATCH related files into fewer,
-     larger steps — aim for 3-6 implement steps total (e.g. one step for all
-     structure/HTML, one for all styles/CSS, one for all logic/JS), NOT one step
-     per file. Each file small + focused + REUSABLE (DRY, composition/OOP).
+  2. IMPLEMENT (middle steps, tool_hint "file"): ONE STEP PER FILE. Each step
+     targets exactly ONE file with a specific, narrow goal. For example:
+     "Create projects/calc/index.html — HTML structure for a calculator with
+     display and button grid" — NOT "Create all HTML and CSS files".
+     Granular steps are easier to verify and fix individually. Aim for 8-20
+     implement steps for a typical project. Each file small + focused + REUSABLE.
      ALWAYS specify the full path under projects/<slug>/.
   3. VERIFY (tool_hint "terminal"): run the build/tests
      (npm run build / go build ./... / go test ./...) and report pass/fail.
@@ -225,6 +227,15 @@ If the user wants to preview/see the result ("give me the URL", "let me see it")
 produce STATIC files (plain HTML/CSS/JS, or build to dist/) — do NOT run a
 blocking dev server (npm run dev / vite), which hangs. A SERVE step is added
 automatically to start a background static server and report the localhost URL.
+
+FIX/REPAIR TASKS — when the user says "fix", "repair", "debug", or "make it work":
+Produce ONE STEP PER FILE that needs changes. For each broken file, emit a
+specific step naming the exact file and what to change:
+  "Fix projects/calc/webpack.config.js — add .tsx to ts-loader rule, set mode"
+  "Fix projects/calc/tsconfig.json — add jsx: react-jsx to compilerOptions"
+  "Fix projects/calc/src/index.ts — rename to .tsx or remove JSX syntax"
+Do NOT batch fixes into one "fix everything" step. Each fix is independently
+verifiable. After fixes, VERIFY runs the build again.
 
 PROJECT DIRECTORY CONVENTION:
 All build artifacts go under projects/<slug>/ where <slug> is a short kebab-case
