@@ -100,9 +100,6 @@ export function ChatPanel() {
   // actually flow (the per-request chat SSE doesn't carry them for shared
   // role agents). During streaming, the live panel shows the broker feed.
   const { tree: liveActivity } = useActivityFeed();
-      }),
-    onDropLast: () => setBubbles((b) => b.slice(0, -1)),
-  });
 
   // Sync URL when mode/role change (so user can share/bookmark specific states)
   useEffect(() => {
