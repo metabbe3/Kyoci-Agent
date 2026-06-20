@@ -1,0 +1,58 @@
+2024-05-20 09:00:12 INFO  [bootstrap] System monitor agent started, pid=4821, node=prod-edge-01
+2024-05-20 09:00:13 DEBUG [config] Loaded configuration from /etc/sys-monitor/config.yaml (3 watch dirs)
+2024-05-20 09:00:14 INFO  [db] SQLite database opened at /var/lib/sys-monitor/logs.db (schema v1.2)
+2024-05-20 09:00:15 DEBUG [scanner] Registering watch on /var/log/nginx
+2024-05-20 09:00:15 DEBUG [scanner] Registering watch on /var/log/app
+2024-05-20 09:00:16 INFO  [scanner] All directory watches active; entering poll loop (interval=2s)
+2024-05-20 09:01:42 INFO  [nginx] 200 GET /api/health 8ms (upstream: app-7f9c)
+2024-05-20 09:02:05 WARN  [nginx] 404 GET /favicon.ico — no matching route, client=10.0.4.22
+2024-05-20 09:03:18 INFO  [app] User session created uid=1042 ttl=3600
+2024-05-20 09:04:55 DEBUG [app] Cache hit key=user:1042:profile
+2024-05-20 09:06:31 INFO  [nginx] 200 POST /api/login 42ms
+2024-05-20 09:07:12 WARN  [app] Rate limit threshold reached for ip=10.0.4.88 (120 req/min)
+2024-05-20 09:08:44 ERROR [app] Database query timeout after 5000ms — query=SELECT * FROM orders WHERE created_at > ?
+2024-05-20 09:08:45 ERROR [app] Stack: sqlite3.OperationalError: database is locked (pid=4890, thread=worker-3)
+2024-05-20 09:08:46 WARN  [app] Retrying query attempt 1/3 after backoff 250ms
+2024-05-20 09:08:47 INFO  [app] Query succeeded on retry attempt 2 (elapsed=6120ms)
+2024-05-20 09:10:02 DEBUG [nginx] 304 GET /static/app.js (etag match)
+2024-05-20 09:11:33 INFO  [nginx] 200 GET /api/orders 18ms
+2024-05-20 09:12:50 WARN  [disk] Volume /var usage at 82% (threshold 80%)
+2024-05-20 09:13:14 DEBUG [disk] Largest files: /var/log/nginx/access.log (1.4G), /var/lib/postgres/pg_wal (980M)
+2024-05-20 09:14:09 ERROR [nginx] 502 Bad Gateway upstream=app-7f9c — connection refused
+2024-05-20 09:14:10 ERROR [nginx] Upstream health check failed: app-7f9c unreachable on :8080
+2024-05-20 09:14:11 WARN  [nginx] Circuit breaker opened for upstream app-7f9c (failures=5)
+2024-05-20 09:14:40 INFO  [nginx] Upstream app-7f9c recovered, health check OK (rtt=12ms)
+2024-05-20 09:14:41 INFO  [nginx] Circuit breaker closed, routing resumed to app-7f9c
+2024-05-20 09:16:22 DEBUG [app] GC pause 14ms (heap=312M)
+2024-05-20 09:17:55 INFO  [nginx] 200 GET /api/health 6ms
+2024-05-20 09:19:03 WARN  [app] Slow query detected: SELECT COUNT(*) FROM events (1240ms, threshold=1000ms)
+2024-05-20 09:20:31 ERROR [app] Unhandled exception in request handler: KeyError 'customer_id'
+2024-05-20 09:20:32 ERROR [app] Traceback: File "handlers/billing.py", line 88, in process_payment
+2024-05-20 09:20:33 WARN  [app] Request 5f3a9c failed with 500; user notified
+2024-05-20 09:21:10 INFO  [nginx] 200 GET /api/orders 22ms
+2024-05-20 09:22:48 DEBUG [scanner] Rotated /var/log/nginx/access.log -> access.log.1 (size=1.4G)
+2024-05-20 09:24:15 INFO  [nginx] 201 POST /api/orders 95ms (uid=1042)
+2024-05-20 09:25:39 WARN  [memory] Process app-7f9c RSS=1.9G approaching limit 2G
+2024-05-20 09:26:50 ERROR [app] OOM risk: memory allocator failed to reserve 64M block
+2024-05-20 09:26:51 ERROR [app] Emergency GC triggered, releasing 410M across 3 pools
+2024-05-20 09:26:52 INFO  [app] Memory stabilized RSS=1.4G after emergency GC
+2024-05-20 09:28:14 DEBUG [nginx] 200 GET /static/style.css 4ms
+2024-05-20 09:29:40 INFO  [nginx] 200 GET /api/health 5ms
+2024-05-20 09:30:55 WARN  [auth] JWT token expiring soon for uid=1042 (ttl=120s)
+2024-05-20 09:31:20 INFO  [auth] Token refreshed for uid=1042 (new ttl=3600)
+2024-05-20 09:32:48 ERROR [nginx] 504 Gateway Timeout upstream=app-7f9c (30000ms)
+2024-05-20 09:32:49 WARN  [nginx] Upstream response time degraded p99=8200ms
+2024-05-20 09:33:30 INFO  [nginx] 200 GET /api/orders 19ms (recovered)
+2024-05-20 09:35:02 DEBUG [scanner] Heartbeat: 4 dirs watched, 0 new files, 0 errors
+2024-05-20 09:36:44 INFO  [nginx] 200 GET /api/health 7ms
+2024-05-20 09:38:11 WARN  [disk] Volume /var usage at 85% — log rotation recommended
+2024-05-20 09:39:55 ERROR [app] Failed to enqueue job billing.reconcile: Redis connection refused (redis:6379)
+2024-05-20 09:39:56 WARN  [app] Job billing.reconcile queued to local fallback (sqlite-backed)
+2024-05-20 09:40:30 INFO  [app] Fallback queue flushed 12 jobs after Redis recovered
+2024-05-20 09:42:08 DEBUG [nginx] 200 GET /api/orders 16ms
+2024-05-20 09:43:51 INFO  [nginx] 200 POST /api/login 38ms
+2024-05-20 09:45:22 WARN  [app] Deprecated endpoint /api/v1/users called by uid=9981
+2024-05-20 09:46:40 ERROR [app] TLS handshake failed from 10.0.9.4: certificate verify error (self-signed)
+2024-05-20 09:47:15 INFO  [nginx] 200 GET /api/health 6ms
+2024-05-20 09:48:33 DEBUG [scanner] Heartbeat: 4 dirs watched, 1 new file, 0 errors
+2024-05-20 09:50:00 INFO  [bootstrap] Health rollup: 142 requests, 4 errors (2.8% error rate), p99=8200ms

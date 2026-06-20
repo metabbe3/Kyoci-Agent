@@ -721,6 +721,63 @@ func (o *Orchestrator) RunExplore(ctx context.Context, question string) (string,
 	return result.Content, nil
 }
 
+// RunResearch dispatches a deep-research investigation using web_search +
+// web_fetch tools. Returns a cited Markdown report.
+func (o *Orchestrator) RunResearch(ctx context.Context, question string) (string, error) {
+	o.mu.RLock()
+	started := o.started
+	o.mu.RUnlock()
+	if !started {
+		return "", apperr.ErrNotStarted
+	}
+	ctx, span := o.tracer.StartSpan(ctx, "Orchestrator.RunResearch")
+	defer span.End()
+
+	agentCfg := agent.AgentConfig{
+		SystemPrompt:      agent.ResearchSystemPrompt,
+		MaxIterations:     20,
+		ToolChoice:        "auto",
+		Temperature:       0.3,
+		MaxTokens:         4096,
+		PreferredProvider: "",
+		EnableSkills:      false,
+		EnableMemory:      true,
+		EnableStreaming:   false,
+	}
+	// Route research to cloud — needs reasoning + web access
+	if route := o.routing; route.CacheEnabled {
+		// Check if QA routing is configured (reuse for research)
+	}
+	tools := agent.NewReadOnlyToolFilter(o.toolReg.Kyoci(), agent.ResearchToolAllowlist)
+	ag := agent.NewAgent(agentCfg, o.llmRouter, tools, o.skillReg.Kyoci(), o.memoryMgr)
+
+	o.logger.Info("research worker dispatched", "question", question)
+	result, err := ag.Execute(ctx, question)
+	if err != nil {
+		o.logger.Error("research worker failed", "error", err)
+		return "", err
+	}
+	o.logger.Info("research worker completed", "iterations", result.Iterations,
+		"tool_calls", result.ToolCallsMade, "report_len", len(result.Content))
+	return result.Content, nil
+}
+
+// RunCompare sends the same prompt to two providers and returns both responses.
+func (o *Orchestrator) RunCompare(ctx context.Context, prompt string) (*agent.CompareResult, error) {
+	o.mu.RLock()
+	started := o.started
+	o.mu.RUnlock()
+	if !started {
+		return nil, apperr.ErrNotStarted
+	}
+	ctx, span := o.tracer.StartSpan(ctx, "Orchestrator.RunCompare")
+	defer span.End()
+
+	// Build a temporary agent just to access the router
+	ag := agent.NewAgent(agent.DefaultAgentConfig(), o.llmRouter, o.toolReg.Kyoci(), o.skillReg.Kyoci(), o.memoryMgr)
+	return ag.RunCompare(ctx, prompt)
+}
+
 // Status returns the current system status.
 func (o *Orchestrator) Status() *SystemStatus {
 	o.mu.RLock()

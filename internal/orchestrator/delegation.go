@@ -80,6 +80,45 @@ func (o *Orchestrator) wireDelegation(tool *builtin.DelegationTool) {
 			return out, nil
 		}
 
+		// Research dispatch — multi-source web research with cited report.
+		if agent.HasResearchPrefix(goal) {
+			question := agent.StripResearchPrefix(goal)
+			if contextInfo != "" {
+				question = question + "\n\nAdditional context: " + contextInfo
+			}
+			slog.Info("delegation: routing to research worker", "question", question)
+			o.publishActivity(kyoci.ActivityEvent{
+				Type:     kyoci.ActivityLog,
+				TaskID:   "delegation:" + delegationID(goal),
+				TaskName: "Deep Research",
+				Detail:   fmt.Sprintf("Researching: %s", question[:min(80, len(question))]),
+			})
+			out, err := o.RunResearch(ctx, question)
+			if err != nil {
+				finishOK = false
+				return "", err
+			}
+			return out, nil
+		}
+
+		// Compare dispatch — blind side-by-side model comparison.
+		if agent.HasComparePrefix(goal) {
+			prompt := agent.StripComparePrefix(goal)
+			slog.Info("delegation: routing to compare worker", "prompt", prompt)
+			o.publishActivity(kyoci.ActivityEvent{
+				Type:     kyoci.ActivityLog,
+				TaskID:   "delegation:" + delegationID(goal),
+				TaskName: "Model Compare",
+				Detail:   fmt.Sprintf("Comparing: %s", prompt[:min(80, len(prompt))]),
+			})
+			result, err := o.RunCompare(ctx, prompt)
+			if err != nil {
+				finishOK = false
+				return "", err
+			}
+			return agent.FormatCompareReport(result), nil
+		}
+
 		// Build the task string with quality prefix
 		taskStr := subAgentPrefix + goal
 		if contextInfo != "" {
@@ -123,22 +162,31 @@ func delegationID(goal string) string {
 func delegationLabel(goal string) string {
 	if agent.HasExplorePrefix(goal) {
 		q := agent.StripExplorePrefix(goal)
-		if len(q) > 80 {
-			return q[:77] + "…"
-		}
+		if len(q) > 80 { return q[:77] + "…" }
 		return "Explore: " + q
 	}
-	if len(goal) > 80 {
-		return goal[:77] + "…"
+	if agent.HasResearchPrefix(goal) {
+		q := agent.StripResearchPrefix(goal)
+		if len(q) > 80 { return q[:77] + "…" }
+		return "Research: " + q
 	}
+	if agent.HasComparePrefix(goal) {
+		q := agent.StripComparePrefix(goal)
+		if len(q) > 80 { return q[:77] + "…" }
+		return "Compare: " + q
+	}
+	if len(goal) > 80 { return goal[:77] + "…" }
 	return goal
 }
 
-// delegationRole guesses which agent role a delegation targets. Explores get
-// "explore"; everything else gets "generalist" (the default role).
 func delegationRole(goal string) string {
-	if agent.HasExplorePrefix(goal) {
-		return "explore"
-	}
+	if agent.HasExplorePrefix(goal) { return "explore" }
+	if agent.HasResearchPrefix(goal) { return "research" }
+	if agent.HasComparePrefix(goal) { return "compare" }
 	return "generalist"
+}
+
+func min(a, b int) int {
+	if a < b { return a }
+	return b
 }

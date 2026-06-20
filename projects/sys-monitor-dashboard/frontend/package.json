@@ -1,0 +1,23 @@
+{
+  "name": "sys-monitor-dashboard-frontend",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "React + Vite + Tailwind frontend for the System Monitor & Log Analyzer Dashboard. Clean, high-contrast, minimalist UI with pastel log-level accents.",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.1",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.41",
+    "tailwindcss": "^3.4.10",
+    "vite": "^5.4.2"
+  }
+}

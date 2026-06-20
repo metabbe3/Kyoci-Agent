@@ -1,0 +1,31 @@
+{
+  "name": "sys-monitor-dashboard-backend",
+  "version": "1.0.0",
+  "description": "Local-first backend for the System Monitor & Log Analyzer Dashboard. Scans local directories for logs, parses them with regex, and stores them in a local SQLite database.",
+  "main": "src/server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "init-db": "node src/scripts/init-db.js",
+    "scan": "node src/scripts/scan-logs.js"
+  },
+  "keywords": [
+    "logs",
+    "monitor",
+    "sqlite",
+    "local-first",
+    "dashboard"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "better-sqlite3": "^12.11.1",
+    "chokidar": "^3.6.0",
+    "cors": "^2.8.5",
+    "express": "^4.19.2"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

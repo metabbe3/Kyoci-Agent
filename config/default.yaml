@@ -70,7 +70,19 @@ webhook:
 #       env:
 #         GITHUB_TOKEN: "ghp_xxx"
 mcp:
-    servers: {}
+    servers:
+        context7:
+            enabled: true
+            command: "npx"
+            args: ["-y", "@upstash/context7-mcp"]
+        filesystem:
+            enabled: true
+            command: "npx"
+            args: ["-y", "@modelcontextprotocol/server-filesystem", "."]
+        fetch:
+            enabled: true
+            command: "npx"
+            args: ["-y", "@modelcontextprotocol/server-fetch"]
 # ── LLM Providers ──────────────────────────────────────
 # Enable providers by setting enabled: true and adding your API key.
 # API keys can also be set via environment variables:
