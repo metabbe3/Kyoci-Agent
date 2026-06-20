@@ -298,6 +298,35 @@ export function ChatPanel() {
         </div>
       </div>
 
+      {/* Live activity panel — BELOW chat, ABOVE input. Shows real-time
+       * agent activity with provider badges [LOCAL]/[CLOUD], token costs,
+       * and a stopwatch timer. Claude Code-style. */}
+      {streaming && (() => {
+        const lastBubble = bubbles[bubbles.length - 1];
+        const activityNodes = lastBubble?.activity ? treeAsArray(lastBubble.activity) : [];
+        if (activityNodes.length === 0) return null;
+        // Aggregate token costs by provider
+        let localTokens = 0, cloudTokens = 0;
+        for (const n of activityNodes) {
+          if (n.provider === "lmstudio" || n.provider === "ollama") localTokens += n.tokensUsed;
+          else if (n.provider) cloudTokens += n.tokensUsed;
+        }
+        return (
+          <div className="px-6 lg:px-10 pb-2 max-h-[280px] overflow-y-auto border-t border-white/5">
+            <div className="max-w-3xl mx-auto">
+              <div className="flex items-center gap-2 mb-1 text-[10px] uppercase tracking-wider opacity-50">
+                <span>Live Activity</span>
+                <span>·</span>
+                <span style={{ color: "#84cc16" }}>local: {formatTok(localTokens)}</span>
+                <span>·</span>
+                <span style={{ color: "#60a5fa" }}>cloud: {formatTok(cloudTokens)}</span>
+              </div>
+              <ActivityTree nodes={activityNodes} compact defaultExpanded={false} />
+            </div>
+          </div>
+        );
+      })()}
+
       {/* Input capsule */}
       <footer className="px-6 lg:px-10 pb-8">
         <div className="max-w-3xl mx-auto">
@@ -578,4 +607,10 @@ function EmptyState({
       )}
     </motion.div>
   );
+}
+
+function formatTok(n: number): string {
+  if (n <= 0) return "0";
+  if (n < 1000) return `${n}`;
+  return `${(n / 1000).toFixed(1)}k`;
 }

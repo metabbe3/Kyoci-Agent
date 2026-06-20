@@ -108,6 +108,8 @@ export type ActivityEvent = {
   task_name: string;
   parent_id?: string;
   role?: string;
+  provider?: string;
+  model?: string;
   tool_name?: string;
   tool_args?: string;
   detail?: string;
@@ -127,13 +129,13 @@ export type TreeNode = {
   taskName: string;
   parentID?: string;
   role?: string;
+  provider?: string;
+  model?: string;
   toolUses: number;
   tokensUsed: number;
   status: "running" | "done" | "error";
   startedAt: number;
   finishedAt?: number;
-  /** Rolling log of sub-activity events (tool calls, phase transitions).
-   * Capped at 50; oldest dropped on overflow. */
   subActivities: ActivityEvent[];
   children: TreeNode[];
 };

@@ -110,12 +110,21 @@ func (a *Agent) executeOrchestrated(ctx context.Context, task string) (*kyoci.Ta
 	if len(taskLabel) > 80 {
 		taskLabel = taskLabel[:77] + "…"
 	}
+	// Determine the planner provider for the root activity event
+	rootProvider := a.config.PreferredProvider
+	rootModel := a.config.Model
+	if route := a.effectiveOrchConfig().ModelRouting.Planner; route.Provider != "" {
+		rootProvider = route.Provider
+		rootModel = route.Model
+	}
 	a.emitActivity(kyoci.ActivityEvent{
 		Type:     kyoci.ActivityTaskStart,
 		TaskID:   "root",
 		TaskName: taskLabel,
 		Role:     a.activityRole,
 		Status:   "running",
+		Provider: rootProvider,
+		Model:    rootModel,
 	})
 
 	// Phase 1 — Plan

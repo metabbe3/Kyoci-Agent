@@ -1,6 +1,45 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import type { TreeNode } from "../lib/types";
+
+/**
+ * useElapsed — real-time stopwatch for running tasks. Returns elapsed seconds
+ * that updates every 500ms while isRunning is true. Stops updating when the
+ * task completes. Used by ActivityRow so the timer ticks live.
+ */
+function useElapsed(startedAt: number, finishedAt: number | undefined): string {
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (finishedAt) return; // task done — no ticking needed
+    const id = setInterval(() => setTick((t) => t + 1), 500);
+    return () => clearInterval(id);
+  }, [finishedAt]);
+  const end = finishedAt ?? Date.now();
+  return `${((end - startedAt) / 1000).toFixed(1)}s`;
+}
+
+/**
+ * ProviderBadge — colored pill showing [LOCAL] or [CLOUD] based on the
+ * provider field. Green for local (lmstudio), blue for cloud (anthropic/zai),
+ * gray when unknown.
+ */
+function ProviderBadge({ provider }: { provider?: string }) {
+  if (!provider) return null;
+  const isLocal = provider === "lmstudio" || provider === "ollama";
+  const label = isLocal ? "LOCAL" : "CLOUD";
+  const bg = isLocal
+    ? "rgba(132, 204, 22, 0.15)"
+    : "rgba(96, 165, 250, 0.15)";
+  const color = isLocal ? "#84cc16" : "#60a5fa";
+  return (
+    <span
+      className="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold tracking-wider flex-shrink-0"
+      style={{ background: bg, color }}
+    >
+      {label}
+    </span>
+  );
+}
 
 /**
  * ActivityTree — Claude-Code-style live activity log.
@@ -63,9 +102,7 @@ function ActivityRow({
   const latest = node.subActivities.length > 0
     ? node.subActivities[node.subActivities.length - 1]
     : null;
-  const elapsed = node.finishedAt
-    ? `${((node.finishedAt - node.startedAt) / 1000).toFixed(1)}s`
-    : `${((Date.now() - node.startedAt) / 1000).toFixed(1)}s`;
+  const elapsed = useElapsed(node.startedAt, node.finishedAt);
 
   const hasChildren = node.children.length > 0;
   const hasDetail = node.subActivities.length > 0;
@@ -74,7 +111,6 @@ function ActivityRow({
   return (
     <div style={{ marginLeft: depth * 18 }}>
       <div className="flex items-start gap-2 group">
-        {/* Expand/collapse triangle (or dot when not expandable) */}
         <button
           type="button"
           onClick={() => expandable && setExpanded((e) => !e)}
@@ -85,12 +121,16 @@ function ActivityRow({
           {expandable ? (expanded ? "▾" : "▸") : "·"}
         </button>
 
-        {/* Status pill */}
         <StatusPill status={node.status} />
 
-        {/* Task name + metrics */}
         <div className="flex-1 min-w-0">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-sm">
+            <ProviderBadge provider={node.provider} />
+            {node.model && (
+              <span className="opacity-40 text-[10px] font-mono truncate max-w-[140px]">
+                {node.model}
+              </span>
+            )}
             <span className="font-medium truncate" style={{ color: "var(--color-text-primary)" }}>
               {node.taskName}
             </span>
@@ -222,6 +262,8 @@ export function applyActivityEvent(
           taskName: evt.task_name,
           parentID: evt.parent_id,
           role: evt.role,
+          provider: evt.provider,
+          model: evt.model,
           toolUses: 0,
           tokensUsed: 0,
           status: "running",

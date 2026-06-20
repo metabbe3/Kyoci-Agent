@@ -187,6 +187,13 @@ type ActivityEvent struct {
 	// Role labels which agent is running (developer, sre, qa, pm, frontend,
 	// generalist, explore). Helps the Live Activity panel color-code rows.
 	Role string `json:"role,omitempty"`
+	// Provider identifies which LLM provider handled this event — "lmstudio"
+	// (local, free) or "anthropic" (cloud, paid). Lets the UI show [LOCAL]
+	// vs [CLOUD] badges per task row.
+	Provider string `json:"provider,omitempty"`
+	// Model is the specific model name (e.g. "glm-5.2", "qwen2.5-coder-7b").
+	// Shown next to the provider badge for transparency.
+	Model string `json:"model,omitempty"`
 	// ToolName is set on sub_activity events emitted from tool calls:
 	// "file", "grep", "glob", "patch", "terminal", "delegation", etc.
 	ToolName string `json:"tool_name,omitempty"`

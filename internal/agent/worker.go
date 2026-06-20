@@ -199,6 +199,27 @@ func (w *orchestratedWorker) reactLoop(ctx context.Context, messages []kyoci.Mes
 	lastToolSig := "" // circuit breaker: consecutive identical tool calls
 	toolSigRepeat := 0
 
+	// Compute provider routing ONCE so we can include it in all activity
+	// events — the UI shows [LOCAL] vs [CLOUD] per step.
+	stepProvider := a.config.PreferredProvider
+	stepModel := a.config.Model
+	if route := cfg.ModelRouting.Worker; route.Provider != "" {
+		stepProvider = route.Provider
+		stepModel = route.Model
+	}
+	if isQAStep(step.Description) {
+		if route := cfg.ModelRouting.QA; route.Provider != "" {
+			stepProvider = route.Provider
+			stepModel = route.Model
+		}
+	}
+	if isFileCreationStep(step.Description) {
+		if route := cfg.ModelRouting.WorkerFileCreation; route.Provider != "" {
+			stepProvider = route.Provider
+			stepModel = route.Model
+		}
+	}
+
 	// Announce this worker as a new row in the activity tree. TaskID is the
 	// step ID; TaskName is the step description; ParentID stays empty for
 	// top-level orchestrator steps (set by delegation for sub-agent rows).
@@ -207,6 +228,8 @@ func (w *orchestratedWorker) reactLoop(ctx context.Context, messages []kyoci.Mes
 		TaskID:   fmt.Sprintf("step-%d", step.ID),
 		TaskName: step.Description,
 		Status:   "running",
+		Provider: stepProvider,
+		Model:    stepModel,
 	})
 
 	// needsEvidence is constant for the loop: a step whose tool_hint is set OR
@@ -232,32 +255,11 @@ func (w *orchestratedWorker) reactLoop(ctx context.Context, messages []kyoci.Mes
 			req.ToolChoice = "required"
 		}
 
-		// Per-phase model routing: workers use local model (cheap file ops).
-		// QA steps use cloud model (hard reasoning). File-creation steps use
-		// cloud model (needs to generate real code). Override when routing
-		// is configured; fall back to global default otherwise.
-		workerProvider := a.config.PreferredProvider
-		if route := w.cfg.ModelRouting.Worker; route.Provider != "" {
-			req.Model = route.Model
-			workerProvider = route.Provider
-		}
-		if isQAStep(step.Description) {
-			if route := w.cfg.ModelRouting.QA; route.Provider != "" {
-				req.Model = route.Model
-				workerProvider = route.Provider
-			}
-		}
-		// File-creation steps need cloud quality — local models can't generate
-		// real code. This is the REAL hybrid: reads/lists/terminal on local,
-		// file writes on cloud.
-		if isFileCreationStep(step.Description) {
-			if route := w.cfg.ModelRouting.WorkerFileCreation; route.Provider != "" {
-				req.Model = route.Model
-				workerProvider = route.Provider
-			}
-		}
+		// Use the pre-computed step provider/model (computed once at the top
+		// of reactLoop so all activity events carry the same provider info).
+		req.Model = stepModel
 
-		resp, err := a.router.Route(ctx, req, workerProvider)
+		resp, err := a.router.Route(ctx, req, stepProvider)
 		if err != nil {
 			a.emitActivity(kyoci.ActivityEvent{
 				Type:     kyoci.ActivityTaskComplete,
@@ -265,6 +267,8 @@ func (w *orchestratedWorker) reactLoop(ctx context.Context, messages []kyoci.Mes
 				TaskName: step.Description,
 				Status:   "error",
 				Detail:   fmt.Sprintf("LLM call failed: %v", err),
+				Provider: stepProvider,
+				Model:    stepModel,
 			})
 			return messages, "", fmt.Errorf("worker LLM call failed (iter %d): %w", iter, err)
 		}
@@ -281,6 +285,8 @@ func (w *orchestratedWorker) reactLoop(ctx context.Context, messages []kyoci.Mes
 			ToolUses:   toolCallsMade,
 			TokensUsed: tokensUsed,
 			Status:     "running",
+			Provider:   stepProvider,
+			Model:      stepModel,
 		})
 
 		// No tool calls → the model wants to terminate. Decide whether to accept.
@@ -368,6 +374,8 @@ func (w *orchestratedWorker) reactLoop(ctx context.Context, messages []kyoci.Mes
 				ToolUses:   toolCallsMade,
 				TokensUsed: tokensUsed,
 				Status:     "done",
+				Provider:   stepProvider,
+				Model:      stepModel,
 			})
 			return messages, out, nil
 		}
