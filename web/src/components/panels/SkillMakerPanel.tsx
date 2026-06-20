@@ -41,6 +41,29 @@ export function SkillMakerPanel() {
     setTimeout(() => setMsg(""), 4000);
   };
 
+  const loadForEdit = async (s: CustomSkill) => {
+    // Fetch the raw file content
+    try {
+      const res = await fetch(`/api/dashboard/skills/custom?name=${s.name}`);
+      const data = await res.json();
+      if (data.content) {
+        // Parse frontmatter + body
+        const lines = data.content.split("\n");
+        let inFm = false; let bodyStart = 0;
+        for (let i = 0; i < lines.length; i++) {
+          if (lines[i] === "---") { if (inFm) { bodyStart = i + 1; break; } inFm = true; continue; }
+          if (inFm) {
+            if (lines[i].startsWith("description:")) setDesc(lines[i].replace("description:", "").trim().replace(/^"|"$/g, ""));
+            if (lines[i].startsWith("category:")) setCategory(lines[i].replace("category:", "").trim());
+          }
+        }
+        const bodyText = lines.slice(bodyStart).join("\n").trim();
+        setBody(bodyText);
+        setName(s.name);
+      }
+    } catch { setMsg("Failed to load skill for editing"); setTimeout(() => setMsg(""), 3000); }
+  };
+
   const del = async (skillName: string) => {
     await fetch(`/api/dashboard/skills/delete?name=${skillName}`, { method: "DELETE" });
     setSkills((prev) => prev.filter((s) => s.name !== skillName));
@@ -66,6 +89,7 @@ export function SkillMakerPanel() {
                   {s.description && <span className="text-xs opacity-50 ml-2">{s.description}</span>}
                 </div>
                 <span className="text-[10px]">{s.category}</span>
+                <button onClick={() => loadForEdit(s)} className="rounded p-1 hover:bg-white/10" title="Edit"><Save className="h-3.5 w-3.5 opacity-60" /></button>
                 <button onClick={() => del(s.name)} className="rounded p-1 hover:bg-red-500/10"><Trash2 className="h-3.5 w-3.5 text-red-400/60" /></button>
               </div>
             ))}

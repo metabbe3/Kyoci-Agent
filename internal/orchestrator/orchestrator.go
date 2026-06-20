@@ -129,6 +129,7 @@ func New(cfg *config.Config) (*Orchestrator, error) {
 
 	// 4b2. Register security scan tool (OWASP vulnerability scanner)
 	toolReg.Register(builtin.NewSecurityScanTool())
+	toolReg.Register(builtin.NewSkillInstallTool())
 	logger.Info("security scan tool registered")
 
 	// 4c. Register MCP tools (if configured)
