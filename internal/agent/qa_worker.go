@@ -47,6 +47,12 @@ func (a *Agent) QAWorker(ctx context.Context, goal string) (string, error) {
 	qa.config.EnableThinking = false
 	qa.config.EnableSkills = false
 	qa.config.MaxIterations = 15
+	// Route QA to the configured cloud provider if set. Without this, QA
+	// always uses the global default (local) which crashes on large contexts.
+	if route := a.config.Orchestration.ModelRouting.QA; route.Provider != "" {
+		qa.config.PreferredProvider = route.Provider
+		qa.config.Model = route.Model
+	}
 
 	result, err := qa.Execute(ctx, goal)
 	if err != nil {

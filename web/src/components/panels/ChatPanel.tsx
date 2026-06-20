@@ -32,6 +32,7 @@ import { cn } from "@/lib/utils";
 import { Markdown } from "@/components/Markdown";
 import { ThinkingDots } from "@/components/ThinkingDots";
 import { ActivityTree, treeAsArray } from "@/components/ActivityTree";
+import { useActivityFeed } from "@/hooks/useActivityFeed";
 import { VoiceInput } from "@/components/VoiceInput";
 import { FileAttach, humanSize } from "@/components/FileAttach";
 import { springs, staggerContainer, staggerItem } from "@/lib/motion";
@@ -91,6 +92,14 @@ export function ChatPanel() {
         const next = [...b];
         next[next.length - 1] = update(next[next.length - 1]);
         return next;
+      }),
+    onDropLast: () => setBubbles((b) => b.slice(0, -1)),
+  });
+
+  // Subscribe to the global activity broker — this is where activity events
+  // actually flow (the per-request chat SSE doesn't carry them for shared
+  // role agents). During streaming, the live panel shows the broker feed.
+  const { tree: liveActivity } = useActivityFeed();
       }),
     onDropLast: () => setBubbles((b) => b.slice(0, -1)),
   });
@@ -299,15 +308,11 @@ export function ChatPanel() {
       </div>
 
       {/* Live activity panel — BELOW chat, ABOVE input. Shows real-time
-       * agent activity with provider badges [LOCAL]/[CLOUD], token costs,
-       * and a stopwatch timer. Claude Code-style. */}
-      {streaming && (() => {
-        const lastBubble = bubbles[bubbles.length - 1];
-        const activityNodes = lastBubble?.activity ? treeAsArray(lastBubble.activity) : [];
-        if (activityNodes.length === 0) return null;
-        // Aggregate token costs by provider
+       * agent activity from the global broker feed with provider badges
+       * [LOCAL]/[CLOUD], token costs, and a stopwatch timer. */}
+      {streaming && liveActivity.length > 0 && (() => {
         let localTokens = 0, cloudTokens = 0;
-        for (const n of activityNodes) {
+        for (const n of liveActivity) {
           if (n.provider === "lmstudio" || n.provider === "ollama") localTokens += n.tokensUsed;
           else if (n.provider) cloudTokens += n.tokensUsed;
         }
@@ -321,7 +326,7 @@ export function ChatPanel() {
                 <span>·</span>
                 <span style={{ color: "#60a5fa" }}>cloud: {formatTok(cloudTokens)}</span>
               </div>
-              <ActivityTree nodes={activityNodes} compact defaultExpanded={false} />
+              <ActivityTree nodes={liveActivity} compact defaultExpanded={false} />
             </div>
           </div>
         );
