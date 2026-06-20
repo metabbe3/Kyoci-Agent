@@ -230,54 +230,6 @@ export function ChatPanel() {
               </Badge>
             )}
           </div>
-
-          {/* Role picker — agent mode */}
-          <AnimatePresence>
-            {mode === "agent" && (
-              <motion.div
-                initial={{ opacity: 0, height: 0 }}
-                animate={{ opacity: 1, height: "auto" }}
-                exit={{ opacity: 0, height: 0 }}
-                transition={springs.gentle}
-                className="overflow-hidden"
-              >
-                <div className="flex items-center gap-2 mt-4 flex-wrap">
-                  <span className="text-xs font-mono uppercase tracking-[0.22em] text-[var(--color-ink-faint)] mr-1">
-                    Delegate to
-                  </span>
-                  {ROLES.map(({ role: r, abbr }) => (
-                    <button
-                      key={r}
-                      onClick={() => setRole(r)}
-                      data-cursor="hover"
-                      className={cn(
-                        "relative inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-all duration-200",
-                        role === r
-                          ? "scale-105"
-                          : "border-white/10 bg-white/5 text-[var(--color-ink-muted)] hover:bg-white/10"
-                      )}
-                      style={
-                        role === r
-                          ? {
-                              borderColor: roleAccents[r].border,
-                              background: roleAccents[r].bg,
-                              color: roleAccents[r].color,
-                              boxShadow: `0 0 18px -6px ${roleAccents[r].color}`,
-                            }
-                          : undefined
-                      }
-                    >
-                      <span
-                        className="h-1.5 w-1.5 rounded-full"
-                        style={{ background: roleAccents[r].color }}
-                      />
-                      {abbr}
-                    </button>
-                  ))}
-                </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
         </div>
       </header>
 
