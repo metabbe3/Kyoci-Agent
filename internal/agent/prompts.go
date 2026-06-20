@@ -229,7 +229,14 @@ blocking dev server (npm run dev / vite), which hangs. A SERVE step is added
 automatically to start a background static server and report the localhost URL.
 
 FIX/REPAIR TASKS — when the user says "fix", "repair", "debug", or "make it work":
-Produce ONE STEP PER FILE that needs changes. For each broken file, emit a
+FIRST STEP: LIST the target directory to discover what files exist. Example:
+  "List projects/ to confirm the project name and discover its file structure."
+NEVER assume a file exists. If the user names a project, confirm the directory
+exists by listing it FIRST. If the directory name is ambiguous (e.g. the user
+says "calculator-web" but the actual is "calculator-website"), the listing
+step reveals the correct name and subsequent steps use the discovered path.
+
+Then produce ONE STEP PER FILE that needs changes. For each broken file, emit a
 specific step naming the exact file and what to change:
   "Fix projects/calc/webpack.config.js — add .tsx to ts-loader rule, set mode"
   "Fix projects/calc/tsconfig.json — add jsx: react-jsx to compilerOptions"
