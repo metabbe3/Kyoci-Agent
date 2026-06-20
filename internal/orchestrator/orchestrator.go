@@ -739,14 +739,11 @@ func (o *Orchestrator) RunResearch(ctx context.Context, question string) (string
 		ToolChoice:        "auto",
 		Temperature:       0.3,
 		MaxTokens:         4096,
-		PreferredProvider: "",
+		PreferredProvider: "anthropic",
+		Model:             "glm-5.2",
 		EnableSkills:      false,
 		EnableMemory:      true,
 		EnableStreaming:   false,
-	}
-	// Route research to cloud — needs reasoning + web access
-	if route := o.routing; route.CacheEnabled {
-		// Check if QA routing is configured (reuse for research)
 	}
 	tools := agent.NewReadOnlyToolFilter(o.toolReg.Kyoci(), agent.ResearchToolAllowlist)
 	ag := agent.NewAgent(agentCfg, o.llmRouter, tools, o.skillReg.Kyoci(), o.memoryMgr)
