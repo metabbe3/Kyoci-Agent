@@ -385,15 +385,16 @@ function AgentComboSettings({ allModels }: { allModels: ModelOption[] }) {
   const [msg, setMsg] = useState("");
 
   useEffect(() => {
-    // Load current routing from config
-    fetch("/api/dashboard/config")
+    // Load current routing from the routing API endpoint
+    fetch("/api/dashboard/routing")
       .then((r) => r.json())
       .then((d) => {
-        const cfg = d.config?.agent?.orchestration?.model_routing || {};
         const map: Record<string, string> = {};
         for (const p of phases) {
-          const route = cfg[p.key];
-          if (route) map[p.key] = `${route.provider}/${route.model}`;
+          const route = d[p.key];
+          if (route && route.provider) {
+            map[p.key] = `${route.provider}/${route.model}`;
+          }
         }
         setRouting(map);
       })
@@ -401,19 +402,34 @@ function AgentComboSettings({ allModels }: { allModels: ModelOption[] }) {
   }, []);
 
   const save = async () => {
-    // Build routing config from selections
-    const config: any = { agent: { orchestration: { model_routing: {} } } };
+    // Build routing payload from selections
+    const payload: Record<string, { provider: string; model: string }> = {};
     for (const p of phases) {
       const val = routing[p.key];
       if (val) {
-        const [prov, ...mParts] = val.split("/");
-        config.agent.orchestration.model_routing[p.key] = {
-          provider: prov,
-          model: mParts.join("/"),
-        };
+        const slashIdx = val.indexOf("/");
+        if (slashIdx > 0) {
+          payload[p.key] = {
+            provider: val.substring(0, slashIdx),
+            model: val.substring(slashIdx + 1),
+          };
+        }
       }
     }
-    setMsg("✓ Combo saved! Restart to apply.");
+    try {
+      const res = await fetch("/api/dashboard/routing", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (res.ok) {
+        setMsg("✓ Combo saved! Restart to apply.");
+      } else {
+        setMsg("✗ Failed to save combo");
+      }
+    } catch {
+      setMsg("✗ Network error");
+    }
     setTimeout(() => setMsg(""), 4000);
   };
 

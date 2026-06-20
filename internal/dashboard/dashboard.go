@@ -65,6 +65,7 @@ func (s *Server) Routes() map[string]http.HandlerFunc {
 		"/api/dashboard/skills/custom":   s.handleSkillListCustom,
 		"/api/dashboard/skills/create":   s.handleSkillCreate,
 		"/api/dashboard/skills/delete":   s.handleSkillDelete,
+		"/api/dashboard/routing":         s.handleRouting,
 	}
 }
 

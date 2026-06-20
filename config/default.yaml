@@ -1,37 +1,17 @@
-# Kyoci Agent v5 — Default Configuration
-
 server:
     grpc_port: 50051
     rest_port: 8080
     tls_enabled: false
-    tls_cert: ""
-    tls_key: ""
+    tls_cert_file: ""
+    tls_key_file: ""
+    agent_grpc_port: 0
 logging:
-    level: "info"
-    format: "json"
-    # Per-run agent execution traces. When true, every orchestrated agent run
-    # also writes a JSON-lines trace to <per_run_dir>/<YYYY-MM-DD>/run_<task_id>.log
-    # alongside stdout. These are job artifacts, NOT server logs — server runtime
-    # logs still go to stdout only (12-factor). Disable for hermetic test runs.
-    # Env: KYOCI_LOGGING_PER_RUN_ENABLED, KYOCI_LOGGING_PER_RUN_DIR
+    level: info
+    format: json
     per_run_enabled: true
-    per_run_dir: "logs"
-# Per-task workspace configuration. Each orchestrated agent run that produces
-# user-facing files writes them under <dir>/<task_id>/. Tasks that write nothing
-# leave no folder behind. Existing projects/ content is unchanged.
-# Env: KYOCI_TASKS_DIR, KYOCI_TASKS_RETENTION_DAYS
-tasks:
-    dir: "tasks"
-    retention_days: 30  # informational — no auto-deletion; external scripts read this
-# Agents directory — markdown-driven agent definitions. The orchestrator walks
-# this dir at startup and registers each .md file as an agent. Each file has
-# YAML frontmatter (name, description, triggers, tools, memory, priority) and
-# a markdown body that becomes the agent's system prompt ("soul").
-# Add a new agent by dropping another .md file here — no Go code required.
-# Env: KYOCI_AGENTS_DIR
-agents_dir: "agents"
+    per_run_dir: logs
 memory:
-    db_path: "data/kyoci.db"
+    db_path: data/kyoci.db
     compaction_threshold: 0.75
     max_shortterm_tokens: 4000
 pool:
@@ -41,297 +21,225 @@ security:
     auth_enabled: false
     rate_limit: 100
     tls_enabled: false
-# ── Telegram Gateway ───────────────────────────────────
-# NEVER commit a real bot token. Set it via env var KYOCI_TELEGRAM_TOKEN
-# or paste it into this field locally and keep this file out of git if you
-# must commit a different change.
+providers:
+    anthropic:
+        base_url: https://api.z.ai/api/anthropic
+        api_key: 070a627250be43d1bf3b46924417e363.6I9Tsk5LYFralppw
+        default_model: glm-5.2
+        max_retries: 3
+        timeout: 1000
+        enabled: true
+    cloudflare:
+        base_url: https://api.cloudflare.com/client/v4/accounts
+        api_key: ""
+        default_model: '@cf/meta/llama-3.1-8b-instruct'
+        max_retries: 3
+        timeout: 120
+        enabled: false
+    cohere:
+        base_url: https://api.cohere.ai/v1
+        api_key: ""
+        default_model: command-r-plus
+        max_retries: 3
+        timeout: 120
+        enabled: false
+    deepseek:
+        base_url: https://api.deepseek.com/v1
+        api_key: ""
+        default_model: deepseek-coder
+        max_retries: 3
+        timeout: 120
+        enabled: false
+    fireworks:
+        base_url: https://api.fireworks.ai/inference/v1
+        api_key: ""
+        default_model: accounts/fireworks/models/llama-v3p3-70b-instruct
+        max_retries: 3
+        timeout: 120
+        enabled: false
+    gemini:
+        base_url: https://generativelanguage.googleapis.com/v1beta/openai
+        api_key: ""
+        default_model: gemini-2.5-pro-preview-05-21
+        max_retries: 3
+        timeout: 120
+        enabled: false
+    groq:
+        base_url: https://api.groq.com/openai/v1
+        api_key: ""
+        default_model: llama-3.3-70b-versatile
+        max_retries: 3
+        timeout: 60
+        enabled: false
+    litellm:
+        base_url: http://localhost:4000/v1
+        api_key: ""
+        default_model: gpt-3.5-turbo
+        max_retries: 3
+        timeout: 120
+        enabled: false
+    lmstudio:
+        base_url: http://127.0.0.1:1234/v1
+        api_key: ""
+        default_model: meta-llama-3.1-8b-instruct
+        max_retries: 2
+        timeout: 300
+        enabled: true
+    mistral:
+        base_url: https://api.mistral.ai/v1
+        api_key: ""
+        default_model: codestral-latest
+        max_retries: 3
+        timeout: 120
+        enabled: false
+    moonshot:
+        base_url: https://api.moonshot.cn/v1
+        api_key: ""
+        default_model: moonshot-v1-32k
+        max_retries: 3
+        timeout: 120
+        enabled: false
+    nim:
+        base_url: https://integrate.api.nvidia.com/v1
+        api_key: ""
+        default_model: meta/llama-3.1-405b-instruct
+        max_retries: 3
+        timeout: 120
+        enabled: false
+    ollama:
+        base_url: http://127.0.0.1:1234
+        api_key: ""
+        default_model: meta-llama-3.1-8b-instruct
+        max_retries: 5
+        timeout: 300
+        enabled: false
+    openai:
+        base_url: https://api.openai.com/v1
+        api_key: ""
+        default_model: gpt-4o
+        max_retries: 3
+        timeout: 120
+        enabled: false
+    openrouter:
+        base_url: https://openrouter.ai/api/v1
+        api_key: ""
+        default_model: anthropic/claude-3.5-sonnet
+        max_retries: 3
+        timeout: 120
+        enabled: false
+    perplexity:
+        base_url: https://api.perplexity.ai
+        api_key: ""
+        default_model: llama-3.1-sonar-large-128k-online
+        max_retries: 3
+        timeout: 120
+        enabled: false
+    qwen:
+        base_url: https://dashscope.aliyun.com/compatible-mode/v1
+        api_key: ""
+        default_model: qwen-plus
+        max_retries: 3
+        timeout: 120
+        enabled: false
+    together:
+        base_url: https://api.together.ai/v1
+        api_key: ""
+        default_model: meta-llama/Llama-3.3-70B-Instruct-Turbo-Free
+        max_retries: 3
+        timeout: 120
+        enabled: false
+    xai:
+        base_url: https://api.x.ai/v1
+        api_key: ""
+        default_model: grok-beta
+        max_retries: 3
+        timeout: 120
+        enabled: false
+    zai:
+        base_url: https://open.bigmodel.cn/api/paas/v4
+        api_key: ""
+        default_model: glm-4.7
+        max_retries: 3
+        timeout: 120
+        enabled: false
+roles: {}
 telegram:
     enabled: true
     token: ""
     allowed_users: ""
     poll_timeout: 30
-# ── Webhook Gateway ────────────────────────────────────
-# External apps can POST to /api/v1/webhook to trigger tasks
-webhook:
-    enabled: true
-    secret: ""
-# ── MCP (Model Context Protocol) ───────────────────────
-# Connect external MCP servers — their tools become native Kyoci tools
-# mcp:
-#   servers:
-#     filesystem:
-#       enabled: true
-#       command: "npx"
-#       args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
-#     github:
-#       enabled: true
-#       command: "npx"
-#       args: ["-y", "@modelcontextprotocol/server-github"]
-#       env:
-#         GITHUB_TOKEN: "ghp_xxx"
 mcp:
     servers:
         context7:
+            command: npx
+            args:
+                - -y
+                - '@upstash/context7-mcp'
+            env: {}
             enabled: true
-            command: "npx"
-            args: ["-y", "@upstash/context7-mcp"]
-        filesystem:
-            enabled: true
-            command: "npx"
-            args: ["-y", "@modelcontextprotocol/server-filesystem", "."]
         fetch:
+            command: npx
+            args:
+                - -y
+                - '@modelcontextprotocol/server-fetch'
+            env: {}
             enabled: true
-            command: "npx"
-            args: ["-y", "@modelcontextprotocol/server-fetch"]
-# ── LLM Providers ──────────────────────────────────────
-# Enable providers by setting enabled: true and adding your API key.
-# API keys can also be set via environment variables:
-#   KYOCI_PROVIDER_{NAME}_API_KEY=your-key
-providers:
-    ollama:
-        enabled: false
-        base_url: "http://127.0.0.1:1234"
-        default_model: "meta-llama-3.1-8b-instruct"
-        timeout: 300
-        max_retries: 5
-    lmstudio:
-        enabled: true
-        base_url: "http://127.0.0.1:1234/v1"
-        default_model: "meta-llama-3.1-8b-instruct"
-        timeout: 300
-        max_retries: 2
-    openai:
-        enabled: false
-        base_url: "https://api.openai.com/v1"
-        default_model: "gpt-4o"
-        timeout: 120
-        max_retries: 3
-    anthropic:
-        enabled: true
-        base_url: "https://api.z.ai/api/anthropic"
-        default_model: "glm-5.2"
-        timeout: 1000
-        max_retries: 3
-        api_key: "070a627250be43d1bf3b46924417e363.6I9Tsk5LYFralppw" # z.ai token — REDACT IN GIT COMMIT
-    gemini:
-        enabled: false
-        base_url: "https://generativelanguage.googleapis.com/v1beta/openai"
-        default_model: "gemini-2.5-pro-preview-05-21"
-        timeout: 120
-        max_retries: 3
-    zai:
-        enabled: false
-        base_url: "https://open.bigmodel.cn/api/paas/v4"
-        default_model: "glm-4.7"
-        timeout: 120
-        max_retries: 3
-    groq:
-        enabled: false
-        base_url: "https://api.groq.com/openai/v1"
-        default_model: "llama-3.3-70b-versatile"
-        timeout: 60
-        max_retries: 3
-    mistral:
-        enabled: false
-        base_url: "https://api.mistral.ai/v1"
-        default_model: "codestral-latest"
-        timeout: 120
-        max_retries: 3
-    deepseek:
-        enabled: false
-        base_url: "https://api.deepseek.com/v1"
-        default_model: "deepseek-coder"
-        timeout: 120
-        max_retries: 3
-    together:
-        enabled: false
-        base_url: "https://api.together.ai/v1"
-        default_model: "meta-llama/Llama-3.3-70B-Instruct-Turbo-Free"
-        timeout: 120
-        max_retries: 3
-    fireworks:
-        enabled: false
-        base_url: "https://api.fireworks.ai/inference/v1"
-        default_model: "accounts/fireworks/models/llama-v3p3-70b-instruct"
-        timeout: 120
-        max_retries: 3
-    xai:
-        enabled: false
-        base_url: "https://api.x.ai/v1"
-        default_model: "grok-beta"
-        timeout: 120
-        max_retries: 3
-    # ── Eight new providers (Liquid Glass redesign) ────────
-    cohere:
-        enabled: false
-        base_url: "https://api.cohere.ai/v1"
-        default_model: "command-r-plus"
-        timeout: 120
-        max_retries: 3
-    perplexity:
-        enabled: false
-        base_url: "https://api.perplexity.ai"
-        default_model: "llama-3.1-sonar-large-128k-online"
-        timeout: 120
-        max_retries: 3
-    openrouter:
-        enabled: false
-        base_url: "https://openrouter.ai/api/v1"
-        default_model: "anthropic/claude-3.5-sonnet"
-        timeout: 120
-        max_retries: 3
-    litellm:
-        enabled: false
-        base_url: "http://localhost:4000/v1"
-        default_model: "gpt-3.5-turbo"
-        timeout: 120
-        max_retries: 3
-    cloudflare:
-        enabled: false
-        base_url: "https://api.cloudflare.com/client/v4/accounts"
-        default_model: "@cf/meta/llama-3.1-8b-instruct"
-        timeout: 120
-        max_retries: 3
-    nim:
-        enabled: false
-        base_url: "https://integrate.api.nvidia.com/v1"
-        default_model: "meta/llama-3.1-405b-instruct"
-        timeout: 120
-        max_retries: 3
-    moonshot:
-        enabled: false
-        base_url: "https://api.moonshot.cn/v1"
-        default_model: "moonshot-v1-32k"
-        timeout: 120
-        max_retries: 3
-    qwen:
-        enabled: false
-        base_url: "https://dashscope.aliyun.com/compatible-mode/v1"
-        default_model: "qwen-plus"
-        timeout: 120
-        max_retries: 3
-# ── Agent Roles ────────────────────────────────────────
-# Roles are auto-configured with sensible defaults.
-# Only override what you need — do NOT set empty values here
-# as YAML will replace the entire role config.
-#
-# Six roles ship by default: developer, sre, qa, pm, frontend, generalist.
-# generalist is the classifier fallback for ambiguous / research / explanation
-# tasks — it does NOT inherit Developer's "no code in response text" rule.
-#
-# roles:
-#   developer:
-#     preferred_provider: "ollama"
-#     max_iterations: 15
-#   generalist:
-#     preferred_provider: "ollama"
-#     max_iterations: 10
-
-# ── Agent Execution Pipeline ──────────────────────────
-# Two execution paths are supported:
-#
-#   1. Orchestrator-Worker (DEFAULT, recommended): Planner → Dispatcher →
-#      Workers → Synthesizer. Each LLM call has ONE job, which a 14B model
-#      handles reliably. Put Go in charge of control flow; let the model
-#      focus on decompose / execute-one-step / synthesize.
-#
-#   2. Thinking state machine (LEGACY): Assess → Plan → Execute → Verify →
-#      Reflect → Done with a JSON scratchpad. Kept as opt-in for advanced
-#      users who tuned it; NOT the default — it exhausts its budget on
-#      multi-step tasks because one call must simultaneously understand,
-#      plan, emit JSON, pick tools, verify, and reflect.
-#
-# Only ONE of orchestration.enabled / thinking.enabled should be true. If
-# both are true, orchestration wins (it is checked first in Execute()).
-#
-# Env overrides:
-#   KYOCI_ORCHESTRATION_ENABLED, KYOCI_ORCHESTRATION_MAX_STEPS,
-#   KYOCI_ORCHESTRATION_MAX_PARALLEL,
-#   KYOCI_ORCHESTRATION_WORKER_MAX_ITERATIONS,
-#   KYOCI_ORCHESTRATION_WORKER_MAX_TOOL_CALLS
-#   KYOCI_THINKING_ENABLED, KYOCI_THINKING_TOOL_BUDGET,
-#   KYOCI_THINKING_MAX_REFLECTIONS, KYOCI_THINKING_MAX_REPLANS,
-#   KYOCI_THINKING_CONFIDENCE_THRESHOLD, KYOCI_THINKING_FEW_SHOT
+        filesystem:
+            command: npx
+            args:
+                - -y
+                - '@modelcontextprotocol/server-filesystem'
+                - .
+            env: {}
+            enabled: true
+webhook:
+    enabled: true
+    secret: ""
 agent:
+    thinking:
+        enabled: false
+        tool_budget: 25
+        max_reflections: 3
+        max_replans: 2
+        confidence_threshold: 0.7
+        few_shot: true
     orchestration:
-        enabled: true # DEFAULT pipeline — one-job-per-call
-        max_steps: 60 # high cap so big tasks decompose fully; circuit breakers guard against loops
-        max_parallel: 1 # serial execution — 14B OOM-crashes under parallel load on M4
-        worker_max_iterations: 8 # per-worker ReAct iteration cap
-        worker_max_tool_calls: 8 # per-worker tool budget
-        max_retries: 2 # pre-HITL retries on VERIFY: failure (L4 benchmark)
+        enabled: true
+        max_steps: 60
+        max_parallel: 1
+        worker_max_iterations: 8
+        worker_max_tool_calls: 8
+        max_retries: 2
         model_routing:
             planner:
-                provider: "anthropic"
-                model: "glm-5.2"
+                provider: anthropic
+                model: glm-5.2
             worker:
-                provider: "lmstudio"
-                model: "qwen2.5-coder-7b-instruct-mlx"
+                provider: lmstudio
+                model: qwen2.5-coder-7b-instruct-mlx
             worker_file_creation:
-                provider: "anthropic"
-                model: "glm-5.2"
+                provider: anthropic
+                model: glm-5.2
             synthesizer:
-                provider: "anthropic"
-                model: "glm-5.2"
+                provider: anthropic
+                model: glm-5.2
             qa:
-                provider: "anthropic"
-                model: "glm-5.2"
-    thinking:
-        enabled: false # legacy JSON-scratchpad mode; opt-in only
-        tool_budget: 25 # max tool calls per task before forced Reflect/terminate
-        max_reflections: 3 # hard cap on Reflect visits per task
-        max_replans: 2 # hard cap on replanning from Reflect
-        confidence_threshold: 0.7 # min Assess confidence for fast-path (skip Plan)
-        few_shot: true # prepend worked JSON example to system prompt
-# ── Human-In-The-Loop (HITL) ──────────────────────────
-# When the orchestrator exhausts max_retries on a task carrying a VERIFY:
-# directive, it emits a HelpRequest via gRPC. Operator clients (cmd/hitlctl)
-# subscribe to this stream and reply with hints. Hints are injected into the
-# agent's next attempt; on success, a permanent "lesson" is recorded to L3
-# SQLite so future sessions benefit.
-#
-# Disable for production runs that don't need operator fallback.
+                provider: anthropic
+                model: glm-5.2
+prompt_skills:
+    enabled: true
+    dir: data/skills
+    max_skills_per_task: 4
+    max_total_chars: 4000
+routing:
+    cache_enabled: true
+    cache_max_entries: 1024
+    log_provenance: true
 hitl:
     enabled: true
     port: 50052
-    request_timeout: 300 # seconds to wait for an operator hint (5 min)
-# ── Prompt Skills ─────────────────────────────────────
-# Markdown knowledge bundles (Hermes-style) loaded from `dir` at startup.
-# Skills matching a task are injected into the system prompt to guide the
-# agent through workflows using tools it already has (terminal, file, http).
-# Add skills by dropping *.md files under data/skills/<category>/.
-# Overrides: KYOCI_PROMPT_SKILLS_ENABLED, KYOCI_PROMPT_SKILLS_DIR,
-#   KYOCI_PROMPT_SKILLS_MAX_PER_TASK, KYOCI_PROMPT_SKILLS_MAX_CHARS
-prompt_skills:
-    enabled: true
-    dir: "data/skills"
-    max_skills_per_task: 4 # cap matched skills per task (prompt size guard)
-    max_total_chars: 4000 # cap total injected body bytes per task — kept small
-    # because the thinking path's JSON protocol (~2.3k
-    # chars) must stay the strongest signal before the
-    # task for 8B-class models. Larger budgets dilute it
-    # and trigger reflection-loop exhaustion.
-
-# ── Filesystem skills ─────────────────────────────────
-# Sandbox + walk caps for project_* skills (project_status, project_structure,
-# project_languages, project_deps, etc.). These read the filesystem and .git
-# internals but never mutate.
-# Overrides: KYOCI_FS_SKILLS_ENABLED, KYOCI_FS_SKILLS_MAX_WALK_FILES
-filesystem_skills:
-    enabled: true
-    sandbox_root: "."              # resolved at startup; project_* skills refuse paths outside this root
-    max_walk_files: 50000          # safety cap on directory walks
-    max_file_size: "10MB"          # skip individual files larger than this during walks
-
-# ── Routing ────────────────────────────────────────────
-# Deterministic task→agent resolver wrapper around the keyword/anchor/regex
-# classifier (agentdef.BestMatch). Adds an exact-hash cache + provenance
-# logging WITHOUT changing the routing decision — when both are disabled,
-# resolveAgent behaves identically to the old ClassifyRole call. See
-# internal/orchestrator/autoresolve.go.
-# Overrides: KYOCI_ROUTING_CACHE_ENABLED, KYOCI_ROUTING_CACHE_MAX_ENTRIES,
-#   KYOCI_ROUTING_LOG_PROVENANCE
-routing:
-    cache_enabled: true        # memoize task→role for O(1) repeat-task routing
-    cache_max_entries: 1024    # evict one arbitrary entry when exceeded (best-effort)
-    log_provenance: true       # emit a "routing decision" log line per task (chosen role, top specialist, abstain)
+    request_timeout: 300
+tasks:
+    dir: tasks
+    retention_days: 30
+agents_dir: agents
