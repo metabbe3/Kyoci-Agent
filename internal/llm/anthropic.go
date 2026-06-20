@@ -34,6 +34,8 @@ type AnthropicClient struct {
 	logger         *slog.Logger
 	mu             sync.RWMutex
 	lastError      error
+	modelsCache    []kyoci.ModelInfo
+	modelsCacheAt  int64
 }
 
 // NewAnthropicClient creates an Anthropic Messages API client.
@@ -69,6 +71,18 @@ func (c *AnthropicClient) Name() string     { return c.name }
 func (c *AnthropicClient) IsAvailable() bool { return c.config.APIKey != "" && c.circuitBreaker.Allow() }
 
 func (c *AnthropicClient) Models() []kyoci.ModelInfo {
+	// Return cached if fresh (60s TTL).
+	now := time.Now().Unix()
+	if c.modelsCache != nil && (now - c.modelsCacheAt) < 60 {
+		return c.modelsCache
+	}
+	result := c.fetchModels()
+	c.modelsCache = result
+	c.modelsCacheAt = now
+	return result
+}
+
+func (c *AnthropicClient) fetchModels() []kyoci.ModelInfo {
 	// Query /v1/models endpoint (z.ai supports this).
 	type m struct{ ID string `json:"id"` }
 	type resp struct{ Data []m `json:"data"` }

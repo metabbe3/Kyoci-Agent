@@ -44,5 +44,9 @@ module.exports = {
     port: 3000,
     hot: true,
     open: true,
+    // Only schema-valid webpack-dev-server v5 options are allowed here.
+    // Do NOT add internal webpack Compiler properties (e.g.
+    // `_assetEmittingPreviousFiles`) — they are rejected by the dev-server
+    // API schema and cause "Invalid options object" errors at startup.
   },
 };

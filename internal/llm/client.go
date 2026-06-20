@@ -28,6 +28,8 @@ type OpenAIClient struct {
 	config           kyoci.ProviderConfig
 	client           *http.Client
 	circuitBreaker   *CircuitBreaker
+	modelsCache      []kyoci.ModelInfo
+	modelsCacheAt    int64
 	mu               sync.RWMutex
 	lastError        error
 	logger           *slog.Logger
@@ -494,7 +496,20 @@ func (c *OpenAIClient) Stream(ctx context.Context, req kyoci.CompletionRequest) 
 }
 
 // Models queries the provider's /v1/models endpoint for all available models.
+// Results cached for 60 seconds to avoid spamming the provider.
 func (c *OpenAIClient) Models() []kyoci.ModelInfo {
+	// Return cached if fresh (60s TTL).
+	now := time.Now().Unix()
+	if c.modelsCache != nil && (now - c.modelsCacheAt) < 60 {
+		return c.modelsCache
+	}
+	result := c.fetchModels()
+	c.modelsCache = result
+	c.modelsCacheAt = now
+	return result
+}
+
+func (c *OpenAIClient) fetchModels() []kyoci.ModelInfo {
 	type modelsResponse struct {
 		Data []struct {
 			ID      string `json:"id"`

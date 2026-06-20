@@ -183,7 +183,7 @@ func exitCodeFromErr(err error) int {
 	return -1
 }
 
-// isDangerousCommand checks if a command is potentially dangerous.
+// isDangerousCommand checks if a command is potentially dangerous OR blocking.
 func (t *TerminalTool) isDangerousCommand(command string) bool {
 	dangerousPatterns := []string{
 		"rm -rf /",
@@ -201,9 +201,34 @@ func (t *TerminalTool) isDangerousCommand(command string) bool {
 		"exec $(",
 	}
 
+	// Blocking server commands — these start a server that never exits and
+	// hang the worker. Use `npm run build` instead of `npm run dev`.
+	blockingPatterns := []string{
+		"npm run dev",
+		"npm run serve",
+		"npm start",
+		"vite",
+		"webpack serve",
+		"webpack-dev-server",
+		"ng serve",
+		"python -m http.server",
+		"python3 -m http.server",
+		"php -S",
+		"ruby -run -e httpd",
+		"live-server",
+		"http-server",
+	}
+
 	cmdLower := strings.ToLower(command)
 	for _, pattern := range dangerousPatterns {
 		if strings.Contains(cmdLower, pattern) {
+			return true
+		}
+	}
+	for _, pattern := range blockingPatterns {
+		if strings.Contains(cmdLower, pattern) {
+			t.logger.Warn("blocking server command blocked", "command", command,
+				"hint", "use 'npm run build' or 'npx webpack --mode production' instead")
 			return true
 		}
 	}
