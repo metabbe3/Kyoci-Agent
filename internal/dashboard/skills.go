@@ -92,6 +92,12 @@ func (s *Server) handleSkillDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name = strings.ToLower(strings.ReplaceAll(name, " ", "-"))
+	// Path traversal defense: only allow alphanumeric + hyphens/underscores.
+	name = filepath.Base(name) // strips any directory components
+	if strings.ContainsAny(name, "/\\..") {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid skill name"})
+		return
+	}
 	path := filepath.Join("data", "skills", name+".md")
 	if err := os.Remove(path); err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "skill not found: " + name})
