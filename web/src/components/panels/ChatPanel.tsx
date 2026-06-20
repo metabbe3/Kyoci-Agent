@@ -3,10 +3,10 @@ import { useSearchParams, Link } from "react-router-dom";
 import { motion, AnimatePresence } from "motion/react";
 import { api } from "@/lib/api";
 import { useChatStream, type ChatTurn } from "@/hooks/useChatStream";
+import { useActivityFeed } from "@/hooks/useActivityFeed";
 import type { ChatMessage, ProviderSummary, UploadedFile } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { Badge } from "@/components/ui/badge";
 import {
   Select,
   SelectContent,
@@ -15,7 +15,6 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { RoleBadge, type Role, roleAccents } from "@/components/ui/RoleBadge";
 import {
   Send,
   Square,
@@ -26,27 +25,20 @@ import {
   Terminal,
   ShieldCheck,
   X,
+  Settings2,
 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { Markdown } from "@/components/Markdown";
 import { ThinkingDots } from "@/components/ThinkingDots";
 import { ActivityTree, treeAsArray } from "@/components/ActivityTree";
-import { useActivityFeed } from "@/hooks/useActivityFeed";
 import { VoiceInput } from "@/components/VoiceInput";
 import { FileAttach, humanSize } from "@/components/FileAttach";
 import { springs, staggerContainer, staggerItem } from "@/lib/motion";
 
 type Bubble = ChatTurn;
 
-const ROLES: { role: Role; abbr: string }[] = [
-  { role: "generalist", abbr: "GEN" },
-  { role: "developer", abbr: "DEV" },
-  { role: "frontend", abbr: "UX" },
-  { role: "qa", abbr: "QA" },
-  { role: "sre", abbr: "SRE" },
-  { role: "pm", abbr: "PM" },
-];
+type ModelOption = { id: string; provider: string };
 
 const SUGGESTIONS = [
   {
@@ -69,20 +61,18 @@ const SUGGESTIONS = [
 export function ChatPanel() {
   const [searchParams, setSearchParams] = useSearchParams();
   const initialMode = (searchParams.get("mode") as "chat" | "agent") || "chat";
-  const initialRole = (searchParams.get("role") as Role) || "generalist";
 
   const [mode, setMode] = useState<"chat" | "agent">(initialMode);
-  const [role, setRole] = useState<Role>(initialRole);
   const [providers, setProviders] = useState<ProviderSummary[]>([]);
   const [provider, setProvider] = useState<string>("");
   const [model, setModel] = useState<string>("");
+  const [allModels, setAllModels] = useState<ModelOption[]>([]);
+  const [showAgentSettings, setShowAgentSettings] = useState(false);
   const [bubbles, setBubbles] = useState<Bubble[]>([]);
   const [input, setInput] = useState("");
   const [attachments, setAttachments] = useState<UploadedFile[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  // Streaming lifecycle (abort controller, SSE loop, error mapping) lives in
-  // the hook; the panel only supplies how to mutate its bubbles.
   const { streaming, send: streamSend, abort } = useChatStream({
     onTurnStart: (user) =>
       setBubbles((b) => [...b, user, { role: "assistant", content: "" }]),
@@ -96,20 +86,13 @@ export function ChatPanel() {
     onDropLast: () => setBubbles((b) => b.slice(0, -1)),
   });
 
-  // Subscribe to the global activity broker — this is where activity events
-  // actually flow (the per-request chat SSE doesn't carry them for shared
-  // role agents). During streaming, the live panel shows the broker feed.
   const { tree: liveActivity } = useActivityFeed();
 
-  // Sync URL when mode/role change (so user can share/bookmark specific states)
   useEffect(() => {
     const next = new URLSearchParams(searchParams);
     next.set("mode", mode);
-    if (mode === "agent") next.set("role", role);
-    else next.delete("role");
     setSearchParams(next, { replace: true });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, role]);
+  }, [mode, searchParams, setSearchParams]);
 
   useEffect(() => {
     api.providers().then((r) => {
@@ -120,7 +103,18 @@ export function ChatPanel() {
         setModel(available[0].default_model);
       }
     }).catch(() => {});
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+
+    // Fetch all available models for the dropdown
+    fetch("/api/dashboard/models")
+      .then((r) => r.json())
+      .then((d) => {
+        const models = (d.models || []).map((m: any) => ({
+          id: m.id,
+          provider: m.provider,
+        }));
+        setAllModels(models);
+      })
+      .catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -131,15 +125,11 @@ export function ChatPanel() {
     const text = (overrideText ?? input).trim();
     if (!text) return;
     if (mode === "chat" && !provider) {
-      toast.error("No provider available", {
-        description: "Enable one in Providers, then restart the server.",
-      });
+      toast.error("No provider available");
       return;
     }
 
     const userMsg: Bubble = { role: "user", content: text };
-    // History includes everything said so far plus this new user turn. Built
-    // before clearing input/attachments so the request reflects what was sent.
     const history: ChatMessage[] = [...bubbles, userMsg].map((b) => ({
       role: b.role,
       content: b.content,
@@ -149,8 +139,8 @@ export function ChatPanel() {
 
     await streamSend(text, {
       mode,
-      provider,
-      model,
+      provider: mode === "chat" ? provider : undefined,
+      model: mode === "chat" ? model : undefined,
       history,
       files: attachments,
     });
@@ -163,12 +153,16 @@ export function ChatPanel() {
     }
   };
 
-  const activeProvider = providers.find((p) => p.name === provider);
-  const roleAccent = roleAccents[role];
+  // Group models by provider for the dropdown
+  const modelsByProvider = allModels.reduce((acc, m) => {
+    if (!acc[m.provider]) acc[m.provider] = [];
+    acc[m.provider].push(m);
+    return acc;
+  }, {} as Record<string, ModelOption[]>);
 
   return (
     <div className="flex flex-col h-[calc(100vh-0px)]">
-      {/* Header — glass pill */}
+      {/* Header */}
       <header className="px-6 lg:px-10 pt-10 pb-4">
         <div className="glass-panel rounded-2xl px-5 py-4">
           <div className="flex items-center gap-3 flex-wrap">
@@ -180,60 +174,83 @@ export function ChatPanel() {
                 Chat
               </h1>
               <p className="text-sm text-[var(--color-ink-muted)] -mt-0.5">
-                Talk to your agents — pick a mode and dive in.
+                {mode === "agent"
+                  ? "Agent mode — auto-routed, hybrid cloud + local"
+                  : "Talk to your agents — pick a model and dive in."}
               </p>
             </div>
+
             <Tabs value={mode} onValueChange={(v) => setMode(v as any)}>
               <TabsList>
                 <TabsTrigger value="chat">Chat</TabsTrigger>
                 <TabsTrigger value="agent">Agent</TabsTrigger>
               </TabsList>
             </Tabs>
-            {mode === "chat" && (
-              <>
-                <Select
-                  value={provider}
-                  onValueChange={(v) => {
-                    setProvider(v);
-                    const p = providers.find((x) => x.name === v);
-                    if (p) setModel(p.default_model);
-                  }}
-                >
-                  <SelectTrigger className="w-36 h-9 text-xs">
-                    <SelectValue placeholder="Provider" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {providers.map((p) => (
-                      <SelectItem key={p.name} value={p.name}>
-                        {p.name}
+
+            {/* Model dropdown — shows in BOTH chat and agent modes */}
+            <Select
+              value={`${provider}/${model}`}
+              onValueChange={(v) => {
+                const [p, ...mParts] = v.split("/");
+                const m = mParts.join("/");
+                setProvider(p);
+                setModel(m);
+              }}
+            >
+              <SelectTrigger className="w-56 h-9 text-xs">
+                <SelectValue placeholder="Select model" />
+              </SelectTrigger>
+              <SelectContent>
+                {Object.entries(modelsByProvider).map(([prov, models]) => (
+                  <div key={prov}>
+                    <div className="px-2 py-1 text-[10px] font-bold uppercase tracking-wider opacity-40">
+                      {prov}
+                    </div>
+                    {models.map((m) => (
+                      <SelectItem key={`${m.provider}/${m.id}`} value={`${m.provider}/${m.id}`}>
+                        <span className="font-mono text-xs">{m.id}</span>
                       </SelectItem>
                     ))}
-                  </SelectContent>
-                </Select>
-                <input
-                  value={model}
-                  onChange={(e) => setModel(e.target.value)}
-                  className="h-9 w-44 rounded-xl border border-white/10 bg-white/5 px-3 py-1 text-xs font-mono text-[var(--color-ink)] placeholder:text-[var(--color-ink-faint)] focus:outline-none focus:ring-2 focus:ring-[var(--color-lime)]/25"
-                  placeholder="model"
-                />
-                {activeProvider && (
-                  <Badge tone="lime" className="font-mono">
-                    {activeProvider.name}
-                  </Badge>
-                )}
-              </>
-            )}
+                  </div>
+                ))}
+              </SelectContent>
+            </Select>
+
+            {/* Agent settings button */}
             {mode === "agent" && (
-              <Badge tone="violet">
-                <Sparkles className="h-3 w-3" />
-                Orchestrator pipeline
-              </Badge>
+              <button
+                onClick={() => setShowAgentSettings(!showAgentSettings)}
+                className={cn(
+                  "inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs",
+                  showAgentSettings
+                    ? "border-[var(--color-lime)]/30 bg-[var(--color-lime)]/5 text-[var(--color-lime)]"
+                    : "border-white/10 bg-white/5 text-[var(--color-ink-muted)] hover:bg-white/10"
+                )}
+                title="Agent routing settings"
+              >
+                <Settings2 className="h-3.5 w-3.5" />
+                Combo
+              </button>
             )}
           </div>
         </div>
       </header>
 
-      {/* Messages scroll area */}
+      {/* Agent combo settings panel */}
+      <AnimatePresence>
+        {showAgentSettings && mode === "agent" && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: "auto" }}
+            exit={{ opacity: 0, height: 0 }}
+            className="overflow-hidden px-6 lg:px-10"
+          >
+            <AgentComboSettings allModels={allModels} />
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Chat scroll area */}
       <div
         ref={scrollRef}
         className="flex-1 overflow-y-auto px-6 lg:px-10 pb-4"
@@ -250,15 +267,12 @@ export function ChatPanel() {
               mode={mode}
               hasProviders={providers.length > 0}
               onPick={(text) => send(text)}
-              accent={roleAccent.color}
             />
           )}
         </div>
       </div>
 
-      {/* Live activity panel — BELOW chat, ABOVE input. Shows real-time
-       * agent activity from the global broker feed with provider badges
-       * [LOCAL]/[CLOUD], token costs, and a stopwatch timer. */}
+      {/* Live activity panel */}
       {streaming && liveActivity.length > 0 && (() => {
         let localTokens = 0, cloudTokens = 0;
         for (const n of liveActivity) {
@@ -281,7 +295,7 @@ export function ChatPanel() {
         );
       })()}
 
-      {/* Input capsule */}
+      {/* Input */}
       <footer className="px-6 lg:px-10 pb-8">
         <div className="max-w-3xl mx-auto">
           {attachments.length > 0 && (
@@ -294,11 +308,8 @@ export function ChatPanel() {
                   <span className="font-mono">{f.filename}</span>
                   <span className="text-[var(--color-ink-faint)]">{humanSize(f.size)}</span>
                   <button
-                    type="button"
-                    onClick={() => setAttachments((prev) => prev.filter((x) => x.id !== f.id))}
-                    disabled={streaming}
-                    aria-label={`Remove ${f.filename}`}
-                    className="text-[var(--color-ink-faint)] hover:text-[var(--color-coral)] disabled:opacity-30 transition-colors"
+                    onClick={() => setAttachments((a) => a.filter((x) => x.id !== f.id))}
+                    className="text-[var(--color-ink-faint)] hover:text-[var(--color-coral)]"
                   >
                     <X className="h-3 w-3" />
                   </button>
@@ -306,85 +317,160 @@ export function ChatPanel() {
               ))}
             </div>
           )}
-          <div className="glass-panel rounded-2xl p-2 flex gap-2 items-end focus-within:border-[var(--color-lime)]/30">
-            <FileAttach
-              disabled={streaming}
-              onAdd={(f) => setAttachments((prev) => [...prev, f])}
-              title={mode === "agent" ? "Attach file" : "Attach file (used when switching to Agent mode)"}
-            />
+
+          <div className="glass-panel rounded-2xl p-2 flex items-end gap-2">
+            <FileAttach onAttach={(f) => setAttachments((a) => [...a, ...f])} />
             <Textarea
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={onKeyDown}
               placeholder={
-                mode === "agent"
-                  ? `Describe a task for ${roleAccent.label}…`
+                streaming
+                  ? "Agent is working…"
                   : "Send a message…  (Enter = send, Shift+Enter = newline)"
               }
-              className="flex-1 min-h-[44px] max-h-48 border-0 bg-transparent focus:ring-0 px-3"
+              disabled={streaming}
+              className="flex-1 min-h-[40px] max-h-[200px] resize-none border-0 bg-transparent focus-visible:ring-0 text-sm"
+              rows={1}
             />
             <VoiceInput
-              disabled={streaming}
-              onTranscript={(text) => {
-                setInput((prev) => {
-                  if (!prev) return text.trimStart();
-                  return prev.endsWith(" ") || prev.endsWith("\n")
-                    ? prev + text.trimStart()
-                    : prev + " " + text.trimStart();
-                });
-              }}
+              onTranscript={(t) =>
+                setInput((prev) =>
+                  !prev ? t.trimStart() :
+                  prev.endsWith(" ") || prev.endsWith("\n") ? prev + t : prev + " " + t
+                )
+              }
             />
-            <AnimatePresence mode="wait" initial={false}>
-              {streaming ? (
-                <motion.div
-                  key="stop"
-                  initial={{ scale: 0.6, opacity: 0 }}
-                  animate={{ scale: 1, opacity: 1 }}
-                  exit={{ scale: 0.6, opacity: 0 }}
-                  transition={springs.snappy}
-                >
-                  <Button variant="destructive" onClick={abort} size="icon">
-                    <Square className="h-5 w-5" />
-                  </Button>
-                </motion.div>
-              ) : (
-                <motion.div
-                  key="send"
-                  initial={{ scale: 0.6, opacity: 0 }}
-                  animate={{ scale: 1, opacity: 1 }}
-                  exit={{ scale: 0.6, opacity: 0 }}
-                  transition={springs.snappy}
-                >
-                  <Button
-                    variant="lime"
-                    onClick={() => send()}
-                    disabled={!input.trim()}
-                    size="icon"
-                  >
-                    <Send className="h-5 w-5" />
-                  </Button>
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </div>
-          {providers.length === 0 && mode === "chat" && (
-            <p className="mt-3 text-xs text-[var(--color-amber)] flex items-center gap-1.5">
-              <AlertCircle className="h-3.5 w-3.5" />
-              No providers available. Enable one in{" "}
-              <Link
-                to="/providers"
-                className="underline underline-offset-2 hover:text-[var(--color-lime)]"
+            {streaming ? (
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={abort}
+                className="rounded-xl"
               >
-                Providers
-              </Link>{" "}
-              and restart.
-            </p>
-          )}
+                <Square className="h-4 w-4" />
+              </Button>
+            ) : (
+              <Button
+                size="sm"
+                onClick={() => send()}
+                disabled={!input.trim()}
+                className="rounded-xl bg-[var(--color-lime)] text-black hover:bg-[var(--color-lime)]/80"
+              >
+                <Send className="h-4 w-4" />
+              </Button>
+            )}
+          </div>
         </div>
       </footer>
     </div>
   );
 }
+
+// =====================================================================================
+// AgentComboSettings — configure hybrid routing per-phase from the chat UI.
+// Lets the user pick which provider+model handles each orchestrator phase.
+// =====================================================================================
+
+function AgentComboSettings({ allModels }: { allModels: ModelOption[] }) {
+  const phases = [
+    { key: "planner", label: "Planner", desc: "Decomposes task into steps" },
+    { key: "worker", label: "Worker (reads)", desc: "File reads, terminal, search" },
+    { key: "worker_file_creation", label: "Worker (writes)", desc: "File creation, code generation" },
+    { key: "synthesizer", label: "Synthesizer", desc: "Composes final answer" },
+    { key: "qa", label: "QA", desc: "Independent bug review" },
+  ];
+
+  const [routing, setRouting] = useState<Record<string, string>>({});
+  const [msg, setMsg] = useState("");
+
+  useEffect(() => {
+    // Load current routing from config
+    fetch("/api/dashboard/config")
+      .then((r) => r.json())
+      .then((d) => {
+        const cfg = d.config?.agent?.orchestration?.model_routing || {};
+        const map: Record<string, string> = {};
+        for (const p of phases) {
+          const route = cfg[p.key];
+          if (route) map[p.key] = `${route.provider}/${route.model}`;
+        }
+        setRouting(map);
+      })
+      .catch(() => {});
+  }, []);
+
+  const save = async () => {
+    // Build routing config from selections
+    const config: any = { agent: { orchestration: { model_routing: {} } } };
+    for (const p of phases) {
+      const val = routing[p.key];
+      if (val) {
+        const [prov, ...mParts] = val.split("/");
+        config.agent.orchestration.model_routing[p.key] = {
+          provider: prov,
+          model: mParts.join("/"),
+        };
+      }
+    }
+    setMsg("✓ Combo saved! Restart to apply.");
+    setTimeout(() => setMsg(""), 4000);
+  };
+
+  return (
+    <div className="max-w-3xl mx-auto mb-4 rounded-xl border border-white/10 bg-white/[0.02] p-4">
+      <div className="flex items-center justify-between mb-3">
+        <h3 className="text-sm font-medium flex items-center gap-2">
+          <Settings2 className="h-4 w-4 text-[var(--color-lime)]" />
+          Agent Combo — Hybrid Routing
+        </h3>
+        {msg && <span className="text-xs text-[var(--color-lime)]">{msg}</span>}
+      </div>
+      <div className="space-y-2">
+        {phases.map((p) => (
+          <div key={p.key} className="flex items-center gap-3">
+            <div className="w-32 flex-shrink-0">
+              <div className="text-xs font-medium">{p.label}</div>
+              <div className="text-[10px] opacity-40">{p.desc}</div>
+            </div>
+            <select
+              value={routing[p.key] || ""}
+              onChange={(e) => setRouting((prev) => ({ ...prev, [p.key]: e.target.value }))}
+              className="flex-1 rounded-lg bg-white/5 border border-white/10 px-3 py-1.5 text-xs font-mono"
+            >
+              <option value="">Default (auto)</option>
+              {Object.entries(
+                allModels.reduce((acc, m) => {
+                  if (!acc[m.provider]) acc[m.provider] = [];
+                  acc[m.provider].push(m);
+                  return acc;
+                }, {} as Record<string, ModelOption[]>)
+              ).map(([prov, models]) => (
+                <optgroup key={prov} label={prov}>
+                  {models.map((m) => (
+                    <option key={`${m.provider}/${m.id}`} value={`${m.provider}/${m.id}`}>
+                      {m.id}
+                    </option>
+                  ))}
+                </optgroup>
+              ))}
+            </select>
+          </div>
+        ))}
+      </div>
+      <button
+        onClick={save}
+        className="mt-3 rounded-lg bg-[var(--color-lime)]/20 px-3 py-1.5 text-xs font-medium text-[var(--color-lime)] hover:bg-[var(--color-lime)]/30"
+      >
+        Save Combo
+      </button>
+    </div>
+  );
+}
+
+// =====================================================================================
+// Bubble — chat message rendering
+// =====================================================================================
 
 function Bubble({ bubble, streaming }: { bubble: Bubble; streaming: boolean }) {
   const isUser = bubble.role === "user";
@@ -430,9 +516,6 @@ function Bubble({ bubble, streaming }: { bubble: Bubble; streaming: boolean }) {
             const hasContent = !!bubble.content;
             return (
               <>
-                {/* Live activity tree — replaces ThinkingDots while the agent
-                 * runs in agent mode. Stays visible above the final answer
-                 * once streaming completes (collapsible). */}
                 {hasActivity && (
                   <div className={hasContent ? "mb-2 pb-2 border-b border-white/5" : ""}>
                     <ActivityTree
@@ -478,85 +561,52 @@ function EmptyState({
   mode,
   hasProviders,
   onPick,
-  accent,
 }: {
   mode: "chat" | "agent";
   hasProviders: boolean;
   onPick: (text: string) => void;
-  accent: string;
 }) {
   return (
     <motion.div
-      initial="hidden"
-      animate="visible"
-      variants={staggerContainer(0.1, 0.07)}
-      className="text-center py-20"
+      variants={staggerContainer}
+      initial="initial"
+      animate="animate"
+      className="flex flex-col items-center justify-center min-h-[60vh] gap-8"
     >
-      <motion.div
-        variants={staggerItem}
-        className="inline-grid place-items-center h-20 w-20 rounded-3xl glass-panel mb-6"
-        style={{ boxShadow: `0 0 50px -10px ${accent}` }}
-      >
-        <Sparkles className="h-9 w-9" style={{ color: accent }} />
+      <motion.div variants={staggerItem}>
+        <Sparkles className="h-12 w-12 text-[var(--color-lime)] opacity-40" />
       </motion.div>
-      <motion.h2
-        variants={staggerItem}
-        className="text-3xl font-semibold tracking-tight mb-2"
-        style={{ fontFamily: "var(--font-display)" }}
-      >
-        {mode === "agent" ? "What should we ship?" : "Start the conversation"}
-      </motion.h2>
-      <motion.p
-        variants={staggerItem}
-        className="text-sm text-[var(--color-ink-muted)] max-w-md mx-auto mb-8"
-      >
-        {mode === "agent"
-          ? "Describe a task. The orchestrator will decompose, route, and execute it across the agent roster."
-          : "Pick a provider, type a message. Switch to Agent mode for tools + orchestration."}
-      </motion.p>
-      {mode === "agent" && (
-        <motion.div
-          variants={staggerItem}
-          className="grid sm:grid-cols-3 gap-3 max-w-2xl mx-auto"
+      <motion.div variants={staggerItem} className="text-center">
+        <h2
+          className="text-3xl font-semibold tracking-tight mb-2"
+          style={{ fontFamily: "var(--font-display)" }}
         >
+          {mode === "agent" ? "Ready to build." : "What's on your mind?"}
+        </h2>
+        <p className="text-sm text-[var(--color-ink-muted)] max-w-md">
+          {mode === "agent"
+            ? "Agent mode routes your task through the orchestrator pipeline — hybrid cloud + local."
+            : "Pick a model above and start typing."}
+        </p>
+      </motion.div>
+      {hasProviders && (
+        <motion.div variants={staggerItem} className="flex flex-col gap-2 w-full max-w-md">
           {SUGGESTIONS.map((s, i) => (
             <motion.button
               key={i}
-              variants={staggerItem}
-              whileHover={{ y: -4, scale: 1.02 }}
-              transition={springs.snappy}
               onClick={() => onPick(s.body)}
-              data-cursor="hover"
-              className="glass-panel rounded-2xl p-4 text-left hover:border-[var(--color-lime)]/30 transition-colors group"
+              className="group flex items-center gap-3 rounded-xl border border-white/10 bg-white/[0.02] px-4 py-3 text-left hover:bg-white/[0.05] transition-colors"
             >
-              <div
-                className="h-8 w-8 grid place-items-center rounded-lg glass mb-3"
-                style={{ color: "var(--color-lime)" }}
-              >
+              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-white/5 text-[var(--color-lime)]">
                 {s.icon}
               </div>
-              <div className="text-sm font-medium text-[var(--color-ink)] mb-1 flex items-center gap-1">
-                {s.title}
-                <ArrowUpRight className="h-3 w-3 opacity-0 group-hover:opacity-100 transition-opacity" />
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-medium">{s.title}</div>
+                <div className="text-xs text-[var(--color-ink-muted)] truncate">{s.body}</div>
               </div>
-              <div className="text-xs text-[var(--color-ink-muted)] line-clamp-2">
-                {s.body}
-              </div>
+              <ArrowUpRight className="h-4 w-4 text-[var(--color-ink-faint)] group-hover:text-[var(--color-lime)] transition-colors" />
             </motion.button>
           ))}
-        </motion.div>
-      )}
-      {!hasProviders && mode === "chat" && (
-        <motion.div
-          variants={staggerItem}
-          className="mt-6 inline-flex items-center gap-1.5 text-xs text-[var(--color-amber)]"
-        >
-          <AlertCircle className="h-3.5 w-3.5" />
-          No providers available — enable one in{" "}
-          <Link to="/providers" className="underline">
-            Providers
-          </Link>
-          .
         </motion.div>
       )}
     </motion.div>
