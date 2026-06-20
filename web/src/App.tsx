@@ -12,6 +12,8 @@ import { HardwarePanel } from "@/components/panels/HardwarePanel";
 import { StatusPanel } from "@/components/panels/StatusPanel";
 import { SettingsPanel } from "@/components/panels/SettingsPanel";
 import { ActivityPanel } from "@/components/panels/ActivityPanel";
+import { MCPPanel } from "@/components/panels/MCPPanel";
+import { SkillMakerPanel } from "@/components/panels/SkillMakerPanel";
 import { pageVariants } from "@/lib/motion";
 
 /** Wrap a panel element in a per-route boundary so one crash doesn't blank the app. */
@@ -39,6 +41,8 @@ function AnimatedRoutes() {
           <Route path="/activity" element={panel("Live Activity", <ActivityPanel />)} />
           <Route path="/providers" element={panel("Providers", <ProvidersPanel />)} />
           <Route path="/skills" element={panel("Skills", <SkillsPanel />)} />
+          <Route path="/skill-maker" element={panel("Skill Maker", <SkillMakerPanel />)} />
+          <Route path="/mcp" element={panel("MCP Manager", <MCPPanel />)} />
           <Route path="/models" element={panel("Models", <ModelsPanel />)} />
           <Route path="/hardware" element={panel("Hardware", <HardwarePanel />)} />
           <Route path="/status" element={panel("Status", <StatusPanel />)} />

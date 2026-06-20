@@ -13,6 +13,7 @@ import {
   CircuitBoard,
   ChevronRight,
   Waypoints,
+  Wand2,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api, health } from "@/lib/api";
@@ -28,6 +29,8 @@ const navItems = [
   { to: "/agents", label: "Agents", icon: Users, hint: "Role browser" },
   { to: "/providers", label: "Providers", icon: Plug, hint: "LLM gateways" },
   { to: "/skills", label: "Skills", icon: Sparkles, hint: "Zero-AI shortcuts" },
+  { to: "/skill-maker", label: "Skill Maker", icon: Wand2, hint: "Create custom skills" },
+  { to: "/mcp", label: "MCP Manager", icon: Plug, hint: "Install tool servers" },
   { to: "/models", label: "Models", icon: Boxes, hint: "Catalog" },
   { to: "/hardware", label: "Hardware", icon: Cpu, hint: "Local fit" },
   { to: "/status", label: "Status", icon: Activity, hint: "Live telemetry" },

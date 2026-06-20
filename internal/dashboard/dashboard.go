@@ -60,6 +60,11 @@ func (s *Server) Routes() map[string]http.HandlerFunc {
 		"/api/dashboard/recommendations": s.handleRecommendations,
 		"/api/dashboard/skills":          s.handleSkills,
 		"/api/dashboard/activity":        s.handleActivityStream,
+		"/api/dashboard/mcp/servers":     s.handleMCPServers,
+		"/api/dashboard/mcp/server":      s.handleMCPServerUpdate,
+		"/api/dashboard/skills/custom":   s.handleSkillListCustom,
+		"/api/dashboard/skills/create":   s.handleSkillCreate,
+		"/api/dashboard/skills/delete":   s.handleSkillDelete,
 	}
 }
 
