@@ -71,6 +71,7 @@ export function ChatPanel() {
   const [bubbles, setBubbles] = useState<Bubble[]>([]);
   const [input, setInput] = useState("");
   const [attachments, setAttachments] = useState<UploadedFile[]>([]);
+  const [planOnly, setPlanOnly] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const { streaming, send: streamSend, abort } = useChatStream({
@@ -137,7 +138,15 @@ export function ChatPanel() {
     setInput("");
     setAttachments([]);
 
-    await streamSend(text, {
+    // Plan-first mode: prepend [PLAN ONLY] so the orchestrator returns a plan
+    // instead of executing. User reviews, then types "execute" to run it.
+    const effectiveText = (mode === "agent" && planOnly && !text.toLowerCase().startsWith("execute"))
+      ? `[PLAN ONLY] ${text}`
+      : text;
+    // Auto-disable plan mode after one use (so "execute" runs normally)
+    if (planOnly && mode === "agent") setPlanOnly(false);
+
+    await streamSend(effectiveText, {
       mode,
       provider: mode === "chat" ? provider : undefined,
       model: mode === "chat" ? model : undefined,
@@ -230,6 +239,23 @@ export function ChatPanel() {
               >
                 <Settings2 className="h-3.5 w-3.5" />
                 Combo
+              </button>
+            )}
+
+            {/* Plan-first toggle — agent mode only */}
+            {mode === "agent" && (
+              <button
+                onClick={() => setPlanOnly(!planOnly)}
+                className={cn(
+                  "inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs",
+                  planOnly
+                    ? "border-[var(--color-lime)]/30 bg-[var(--color-lime)]/5 text-[var(--color-lime)]"
+                    : "border-white/10 bg-white/5 text-[var(--color-ink-muted)] hover:bg-white/10"
+                )}
+                title="Plan first — show plan before executing (like Claude Code)"
+              >
+                <Sparkles className="h-3.5 w-3.5" />
+                {planOnly ? "Plan ✓" : "Plan"}
               </button>
             )}
           </div>

@@ -2,11 +2,13 @@
   "name": "sys-monitor-dashboard-backend",
   "version": "1.0.0",
   "description": "Local-first backend for the System Monitor & Log Analyzer Dashboard. Scans local directories for logs, parses them with regex, and stores them in a local SQLite database.",
-  "main": "src/server.js",
+  "main": "src/index.ts",
   "type": "module",
   "scripts": {
-    "start": "node src/server.js",
-    "dev": "node --watch src/server.js",
+    "start": "ts-node src/index.ts",
+    "dev": "ts-node --watch src/index.ts",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
     "init-db": "node src/scripts/init-db.js",
     "scan": "node src/scripts/scan-logs.js"
   },
@@ -15,7 +17,9 @@
     "monitor",
     "sqlite",
     "local-first",
-    "dashboard"
+    "dashboard",
+    "system-metrics",
+    "websocket"
   ],
   "author": "",
   "license": "MIT",
@@ -23,7 +27,17 @@
     "better-sqlite3": "^12.11.1",
     "chokidar": "^3.6.0",
     "cors": "^2.8.5",
-    "express": "^4.19.2"
+    "express": "^4.19.2",
+    "ps-list": "^8.1.1",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.14.10",
+    "@types/ws": "^8.5.12",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.5.3"
   },
   "engines": {
     "node": ">=18"

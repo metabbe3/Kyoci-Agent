@@ -127,13 +127,31 @@ func (a *Agent) executeOrchestrated(ctx context.Context, task string) (*kyoci.Ta
 		Model:    rootModel,
 	})
 
+	// Plan-first mode: if the task starts with [PLAN ONLY], run just the
+	// planner and return its prose output — don't execute workers. The user
+	// reviews the plan, then sends "execute" to run it normally.
+	if strings.HasPrefix(strings.TrimSpace(task), "[PLAN ONLY]") {
+		a.logger.Info("orchestrator: plan-only mode — returning plan without execution")
+		a.emitActivity(kyoci.ActivityEvent{
+			Type:     kyoci.ActivityLog,
+			TaskID:   "root",
+			TaskName: "Plan mode",
+			Detail:   "Plan-only request — returning plan for user review",
+		})
+		planText := a.runPlanOnly(ctx, task)
+		a.emitActivity(kyoci.ActivityEvent{
+			Type:     kyoci.ActivityTaskComplete,
+			TaskID:   "root",
+			TaskName: taskLabel,
+			Status:   "done",
+			Detail:   "Plan returned — user reviews before execution",
+		})
+		return &kyoci.TaskResult{Content: planText, Iterations: 1}, nil
+	}
+
 	// Phase 1 — Plan
 	steps, err := a.planTask(ctx, task)
 	if err != nil {
-		// Planner failed to produce parseable JSON. The 8B model often just
-		// solves the task in one shot instead of decomposing it. If the raw
-		// output has substance (code blocks or substantial prose), use it as
-		// the answer directly instead of erroring out → 500 in the chat UI.
 		if rawAnswer, ok := salvagePlannerOutput(err); ok {
 			a.logger.Info("orchestrator: planner parse failed; salvaging raw output as answer",
 				"raw_len", len(rawAnswer), "err", err.Error())
@@ -605,6 +623,58 @@ and force a retry — wasting 30 seconds. Don't make it waste that time.`
 // returned JSON array into []OrchStep. The output is resilient to markdown
 // fences and leading prose — the #1 qwen2.5-coder failure mode is emitting
 // "Here is the plan:" before the JSON.
+// runPlanOnly sends the task to the planner with a special prompt that asks
+// for a prose plan (NOT JSON steps). The user reviews it before execution.
+func (a *Agent) runPlanOnly(ctx context.Context, task string) string {
+	// Strip the [PLAN ONLY] prefix
+	cleanTask := strings.TrimPrefix(strings.TrimSpace(task), "[PLAN ONLY]")
+	cleanTask = strings.TrimSpace(cleanTask)
+
+	systemPrompt := `/no_think
+
+You are a planning assistant. The user wants to see your PLAN before you execute anything.
+
+Analyze the task and produce a clear, step-by-step plan in Markdown:
+
+## Plan
+1. [Step description — what you'll do and why]
+2. [Step description]
+3. ...
+
+## Files to Create/Modify
+- path/to/file.ts — what changes
+- path/to/other.ts — what changes
+
+## Risks
+- [Any potential issues]
+
+Do NOT execute anything. Do NOT call tools. Just output the plan. The user will review it and type "execute" to proceed.`
+
+	plannerProvider := a.config.PreferredProvider
+	plannerModel := a.config.Model
+	if route := a.effectiveOrchConfig().ModelRouting.Planner; route.Provider != "" {
+		plannerProvider = route.Provider
+		plannerModel = route.Model
+	}
+
+	req := kyoci.CompletionRequest{
+		Messages: []kyoci.Message{
+			{Role: kyoci.RoleSystem, Content: systemPrompt},
+			{Role: kyoci.RoleUser, Content: cleanTask},
+		},
+		Temperature: 0.3,
+		MaxTokens:   8192,
+		Model:       plannerModel,
+		ToolChoice:  "none",
+	}
+
+	resp, err := a.router.Route(ctx, req, plannerProvider)
+	if err != nil || resp == nil {
+		return fmt.Sprintf("## Plan\n\nFailed to generate plan: %v\n\nPlease try sending the task directly (without Plan mode) to execute.", err)
+	}
+	return resp.Content
+}
+
 func (a *Agent) planTask(ctx context.Context, task string) ([]OrchStep, error) {
 	systemPrompt := "You are a task planner. Output ONLY a JSON array. No prose, no markdown fences."
 	userPrompt := PlannerPrompt(task)

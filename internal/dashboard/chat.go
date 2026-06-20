@@ -131,6 +131,33 @@ func (s *Server) chatAgent(w http.ResponseWriter, r *http.Request, req ChatReque
 		return
 	}
 
+	// Prepend prior conversation context so the orchestrator/planner has
+	// memory of what was discussed. Each prior turn is truncated to 300 chars.
+	if len(req.Messages) > 1 {
+		var ctx strings.Builder
+		ctx.WriteString("[Prior conversation context — use this to understand the current request]\n")
+		maxPrior := 6 // last 6 turns
+		start := 0
+		if len(req.Messages)-1 > maxPrior {
+			start = len(req.Messages) - 1 - maxPrior
+		}
+		for _, msg := range req.Messages[start : len(req.Messages)-1] {
+			role := "User"
+			if msg.Role == "assistant" {
+				role = "Assistant"
+			}
+			text := msg.Content
+			if len(text) > 300 {
+				text = text[:300] + "..."
+			}
+			if strings.TrimSpace(text) != "" {
+				ctx.WriteString(fmt.Sprintf("%s: %s\n", role, text))
+			}
+		}
+		ctx.WriteString("[/Prior conversation context]\n\n")
+		task = ctx.String() + task
+	}
+
 	// Surface uploaded files at the top of the task so the planner knows they
 	// exist and can route work to the uploaded_file / excel tools. Filenames
 	// are the server-generated UUID-prefixed names the tools resolve directly.
