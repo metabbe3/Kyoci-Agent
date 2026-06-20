@@ -319,7 +319,7 @@ export function ChatPanel() {
           )}
 
           <div className="glass-panel rounded-2xl p-2 flex items-end gap-2">
-            <FileAttach onAttach={(f) => setAttachments((a) => [...a, ...f])} />
+            <FileAttach onAdd={(f: UploadedFile) => setAttachments((a) => [...a, f])} />
             <Textarea
               value={input}
               onChange={(e) => setInput(e.target.value)}
@@ -568,7 +568,7 @@ function EmptyState({
 }) {
   return (
     <motion.div
-      variants={staggerContainer}
+      variants={staggerContainer()}
       initial="initial"
       animate="animate"
       className="flex flex-col items-center justify-center min-h-[60vh] gap-8"
