@@ -69,10 +69,48 @@ func (c *AnthropicClient) Name() string     { return c.name }
 func (c *AnthropicClient) IsAvailable() bool { return c.config.APIKey != "" && c.circuitBreaker.Allow() }
 
 func (c *AnthropicClient) Models() []kyoci.ModelInfo {
+	// Query /v1/models endpoint (z.ai supports this).
+	type m struct{ ID string `json:"id"` }
+	type resp struct{ Data []m `json:"data"` }
+	url := strings.TrimRight(c.config.BaseURL, "/") + "/v1/models"
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return c.fallbackModels()
+	}
+	req.Header.Set("x-api-key", c.config.APIKey)
+	req.Header.Set("anthropic-version", "2023-06-01")
+	respBody, err := c.httpClient.Do(req)
+	if err != nil {
+		return c.fallbackModels()
+	}
+	defer respBody.Body.Close()
+	if respBody.StatusCode != 200 {
+		return c.fallbackModels()
+	}
+	var r resp
+	if err := json.NewDecoder(respBody.Body).Decode(&r); err != nil {
+		return c.fallbackModels()
+	}
+	out := make([]kyoci.ModelInfo, 0, len(r.Data))
+	for _, m := range r.Data {
+		isDefault := m.ID == c.config.DefaultModel
+		tags := []string{}
+		if isDefault { tags = append(tags, "default") }
+		out = append(out, kyoci.ModelInfo{
+			ID: m.ID, Provider: c.name, ContextLength: 128000,
+			SupportsTools: true, SupportsStreaming: true, MaxOutputTokens: 8192,
+			Description: m.ID, Tags: tags,
+		})
+	}
+	if len(out) == 0 { return c.fallbackModels() }
+	return out
+}
+
+func (c *AnthropicClient) fallbackModels() []kyoci.ModelInfo {
 	return []kyoci.ModelInfo{{
 		ID: c.config.DefaultModel, Provider: c.name, ContextLength: 128000,
 		SupportsTools: true, SupportsStreaming: true, MaxOutputTokens: 8192,
-		Description: "Anthropic Messages model " + c.config.DefaultModel, Tags: []string{"default"},
+		Description: "Default: " + c.config.DefaultModel, Tags: []string{"default"},
 	}}
 }
 

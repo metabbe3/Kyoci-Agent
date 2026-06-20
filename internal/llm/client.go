@@ -493,23 +493,54 @@ func (c *OpenAIClient) Stream(ctx context.Context, req kyoci.CompletionRequest) 
 	return ch, nil
 }
 
-// Models returns a list of available models.
+// Models queries the provider's /v1/models endpoint for all available models.
 func (c *OpenAIClient) Models() []kyoci.ModelInfo {
-	// For now, return a basic model info based on the configured model
-	// In a full implementation, this would query the provider's models endpoint
+	type modelsResponse struct {
+		Data []struct {
+			ID      string `json:"id"`
+			OwnedBy string `json:"owned_by,omitempty"`
+		} `json:"data"`
+	}
+	url := strings.TrimRight(c.config.BaseURL, "/") + "/models"
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return c.fallbackModels()
+	}
+	if c.config.APIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.config.APIKey)
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return c.fallbackModels()
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return c.fallbackModels()
+	}
+	var mr modelsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&mr); err != nil {
+		return c.fallbackModels()
+	}
+	out := make([]kyoci.ModelInfo, 0, len(mr.Data))
+	for _, m := range mr.Data {
+		isDefault := m.ID == c.config.DefaultModel
+		tags := []string{}
+		if isDefault { tags = append(tags, "default") }
+		out = append(out, kyoci.ModelInfo{
+			ID: m.ID, Provider: c.name, ContextLength: 128000,
+			SupportsTools: true, SupportsStreaming: true, MaxOutputTokens: 8192,
+			Description: m.OwnedBy, Tags: tags,
+		})
+	}
+	if len(out) == 0 { return c.fallbackModels() }
+	return out
+}
+
+func (c *OpenAIClient) fallbackModels() []kyoci.ModelInfo {
 	return []kyoci.ModelInfo{
-		{
-			ID:                c.config.DefaultModel,
-			Provider:          c.name,
-			ContextLength:     128000,
-			SupportsTools:     true,
-			SupportsStreaming: true,
-			SupportsImages:    false,
-			SupportsAudio:     false,
-			MaxOutputTokens:   8192,
-			Description:       fmt.Sprintf("Default model for %s", c.name),
-			Tags:              []string{"default"},
-		},
+		{ID: c.config.DefaultModel, Provider: c.name, ContextLength: 128000,
+			SupportsTools: true, SupportsStreaming: true, MaxOutputTokens: 8192,
+			Description: fmt.Sprintf("Default for %s", c.name), Tags: []string{"default"}},
 	}
 }
 
