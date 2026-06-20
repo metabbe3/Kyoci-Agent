@@ -65,7 +65,7 @@ export function SkillMakerPanel() {
                   <span className="text-sm font-medium">{s.name}</span>
                   {s.description && <span className="text-xs opacity-50 ml-2">{s.description}</span>}
                 </div>
-                <Badge variant="secondary" className="text-[10px]">{s.category}</Badge>
+                <span className="text-[10px]">{s.category}</span>
                 <button onClick={() => del(s.name)} className="rounded p-1 hover:bg-red-500/10"><Trash2 className="h-3.5 w-3.5 text-red-400/60" /></button>
               </div>
             ))}

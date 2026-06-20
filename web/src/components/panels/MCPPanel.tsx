@@ -2,7 +2,6 @@ import { useState, useEffect } from "react";
 import { motion } from "motion/react";
 import { Plug, Plus, Trash2, Power } from "lucide-react";
 import { TopBar } from "@/components/layout/TopBar";
-import { Badge } from "@/components/ui/badge";
 import { springs } from "@/lib/motion";
 
 type MCPServer = {
@@ -109,7 +108,7 @@ export function MCPPanel() {
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2">
                   <span className="font-medium text-sm">{srv.name}</span>
-                  <Badge variant={srv.enabled ? "default" : "secondary"} className="text-[10px]">{srv.enabled ? "ON" : "OFF"}</Badge>
+                  <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold ${srv.enabled ? "bg-[var(--color-lime)]/15 text-[var(--color-lime)]" : "bg-white/5 text-white/40"}`}>{srv.enabled ? "ON" : "OFF"}</span>
                 </div>
                 <div className="text-xs opacity-50 font-mono truncate">{srv.command} {srv.args.join(" ")}</div>
               </div>
