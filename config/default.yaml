@@ -253,6 +253,9 @@ agent:
                 provider: "anthropic"
                 model: "glm-5.2"
             worker:
+                provider: "lmstudio"
+                model: "qwen2.5-coder-7b-instruct-mlx"
+            worker_file_creation:
                 provider: "anthropic"
                 model: "glm-5.2"
             synthesizer:

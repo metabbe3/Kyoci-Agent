@@ -59,10 +59,11 @@ type PhaseRoute struct {
 
 // ModelRouting holds per-phase routing. Empty fields mean "use global default".
 type ModelRouting struct {
-	Planner     PhaseRoute `yaml:"planner"`
-	Worker      PhaseRoute `yaml:"worker"`
-	Synthesizer PhaseRoute `yaml:"synthesizer"`
-	QA          PhaseRoute `yaml:"qa"`
+	Planner            PhaseRoute `yaml:"planner"`
+	Worker             PhaseRoute `yaml:"worker"`
+	WorkerFileCreation PhaseRoute `yaml:"worker_file_creation"` // cloud override for file-creation steps
+	Synthesizer        PhaseRoute `yaml:"synthesizer"`
+	QA                 PhaseRoute `yaml:"qa"`
 }
 
 // DefaultOrchestratorConfig returns the production defaults.

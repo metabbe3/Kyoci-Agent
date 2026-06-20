@@ -233,7 +233,8 @@ func (w *orchestratedWorker) reactLoop(ctx context.Context, messages []kyoci.Mes
 		}
 
 		// Per-phase model routing: workers use local model (cheap file ops).
-		// QA steps use cloud model (hard reasoning). Override when routing
+		// QA steps use cloud model (hard reasoning). File-creation steps use
+		// cloud model (needs to generate real code). Override when routing
 		// is configured; fall back to global default otherwise.
 		workerProvider := a.config.PreferredProvider
 		if route := w.cfg.ModelRouting.Worker; route.Provider != "" {
@@ -242,6 +243,15 @@ func (w *orchestratedWorker) reactLoop(ctx context.Context, messages []kyoci.Mes
 		}
 		if isQAStep(step.Description) {
 			if route := w.cfg.ModelRouting.QA; route.Provider != "" {
+				req.Model = route.Model
+				workerProvider = route.Provider
+			}
+		}
+		// File-creation steps need cloud quality — local models can't generate
+		// real code. This is the REAL hybrid: reads/lists/terminal on local,
+		// file writes on cloud.
+		if isFileCreationStep(step.Description) {
+			if route := w.cfg.ModelRouting.WorkerFileCreation; route.Provider != "" {
 				req.Model = route.Model
 				workerProvider = route.Provider
 			}
